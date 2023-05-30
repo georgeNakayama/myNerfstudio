@@ -1,0 +1,16 @@
+[project]
+name = "cimle"
+version = "0.0.1"
+
+dependencies = [
+    "nerfstudio" # you may want to consider pinning the version, ie "nerfstudio==0.1.19"
+]
+
+[tool.setuptools.packages.find]
+include = ["myproject*"]
+
+[project.entry-points.'nerfstudio.method_configs']
+cimle_vanilla_nerf = 'myproject.cimle_config:cimle_config'
+
+[project.entry-points.'nerfstudio.dataparser_configs']
+sparse-scannet-dataparser = 'myproject.sparse_scannet_config:sparse_scannet'

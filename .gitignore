@@ -165,6 +165,9 @@ cython_debug/
 outputs/
 exports/
 renders/
+results/
+pretrained/
+scripts/
 # tensorboard log files
 events.out.*
 

@@ -231,9 +231,9 @@ class RayBundle(TensorDataclass):
         Returns:
             RayBundle with subset of rays.
         """
-        assert num_rays <= len(self)
-        indices = random.sample(range(len(self)), k=num_rays)
-        return self[indices]
+        assert num_rays <= len(self.flatten())
+        indices = random.sample(range(len(self.flatten())), k=num_rays)
+        return self.flatten()[tuple(indices)]
 
     def get_row_major_sliced_ray_bundle(self, start_idx: int, end_idx: int) -> "RayBundle":
         """Flattens RayBundle and extracts chunk given start and end indices.

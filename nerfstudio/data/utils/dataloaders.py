@@ -92,6 +92,26 @@ class CacheDataloader(DataLoader):
                 f"Caching {self.num_images_to_sample_from} out of {len(self.dataset)} images, "
                 f"resampling every {self.num_times_to_repeat_images} iters."
             )
+    
+    def recache(self):
+        CONSOLE.print(f"[green]Recaching....")
+        self.cached_collated_batch = None
+        if self.cache_all_images:
+            CONSOLE.print(f"Caching all {len(self.dataset)} images.")
+            if len(self.dataset) > 500:
+                CONSOLE.print(
+                    "[bold yellow]Warning: If you run out of memory, try reducing the number of images to sample from."
+                )
+            self.cached_collated_batch = self._get_collated_batch()
+        elif self.num_times_to_repeat_images == -1:
+            CONSOLE.print(
+                f"Caching {self.num_images_to_sample_from} out of {len(self.dataset)} images, without resampling."
+            )
+        else:
+            CONSOLE.print(
+                f"Caching {self.num_images_to_sample_from} out of {len(self.dataset)} images, "
+                f"resampling every {self.num_times_to_repeat_images} iters."
+            )
 
     def __getitem__(self, idx):
         return self.dataset.__getitem__(idx)
