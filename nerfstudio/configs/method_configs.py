@@ -68,6 +68,7 @@ from nerfstudio.models.vanilla_nerf import NeRFModel, VanillaModelConfig
 from nerfstudio.pipelines.base_pipeline import VanillaPipelineConfig
 from nerfstudio.pipelines.dynamic_batch import DynamicBatchPipelineConfig
 from nerfstudio.plugins.registry import discover_methods
+from myproject.sparse_scannet_dataparser import SparseScannetDataParserConfig
 
 method_configs: Dict[str, TrainerConfig] = {}
 descriptions = {
@@ -342,7 +343,7 @@ method_configs["vanilla-nerf"] = TrainerConfig(
     method_name="vanilla-nerf",
     pipeline=VanillaPipelineConfig(
         datamanager=VanillaDataManagerConfig(
-            dataparser=BlenderDataParserConfig(),
+            dataparser=SparseScannetDataParserConfig(train_json_name="transforms_train_wo_663_932.json", val_json_name="transforms_test.json"),
         ),
         model=VanillaModelConfig(_target=NeRFModel),
     ),

@@ -158,33 +158,7 @@ class Model(nn.Module):
             batch: ground truth batch corresponding to outputs
             metrics_dict: dictionary of metrics, some of which we can use for loss
         """
-    @torch.no_grad()
-    def get_outputs_for_ray_bundle_chunked(self, ray_bundle: RayBundle) -> Dict[str, torch.Tensor]:
-        """Takes in camera parameters and computes the output of the model.
 
-        Args:
-            camera_ray_bundle: ray bundle to calculate outputs over
-        """
-        num_rays_per_chunk = self.config.eval_num_rays_per_chunk
-        num_rays = len(ray_bundle)
-        # print(num_rays)
-        outputs_lists = defaultdict(list)
-        for i in range(0, num_rays, num_rays_per_chunk):
-            start_idx = i
-            end_idx = i + num_rays_per_chunk
-            _ray_bundle = ray_bundle[start_idx:end_idx]
-            # print(_ray_bundle.shape, start_idx, end_idx)
-            outputs = self.forward(ray_bundle=_ray_bundle)
-            for output_name, output in outputs.items():  # type: ignore
-                if not torch.is_tensor(output):
-                    # TODO: handle lists of tensors as well
-                    continue
-                outputs_lists[output_name].append(output)
-        outputs = {}
-        for output_name, outputs_list in outputs_lists.items():
-            outputs[output_name] = torch.cat(outputs_list).view(num_rays, -1)  # type: ignore
-        return outputs
-    
     @torch.no_grad()
     def get_outputs_for_camera_ray_bundle(self, camera_ray_bundle: RayBundle) -> Dict[str, torch.Tensor]:
         """Takes in camera parameters and computes the output of the model.
