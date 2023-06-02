@@ -494,6 +494,7 @@ class Trainer:
         if step_check(step, self.config.steps_per_eval_batch):
             _, eval_loss_dict, eval_metrics_dict = self.pipeline.get_eval_loss_dict(step=step)
             eval_loss = functools.reduce(torch.add, eval_loss_dict.values())
+            CONSOLE.print(f"Eval loss is {eval_loss}")
             writer.put_scalar(name="Eval Loss", scalar=eval_loss, step=step)
             writer.put_dict(name="Eval Loss Dict", scalar_dict=eval_loss_dict, step=step)
             writer.put_dict(name="Eval Metrics Dict", scalar_dict=eval_metrics_dict, step=step)

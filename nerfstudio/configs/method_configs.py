@@ -343,7 +343,7 @@ method_configs["vanilla-nerf"] = TrainerConfig(
     method_name="vanilla-nerf",
     pipeline=VanillaPipelineConfig(
         datamanager=VanillaDataManagerConfig(
-            dataparser=SparseScannetDataParserConfig(train_json_name="transforms_train_wo_663_932.json", val_json_name="transforms_test.json"),
+            dataparser=BlenderDataParserConfig(),
         ),
         model=VanillaModelConfig(_target=NeRFModel),
     ),

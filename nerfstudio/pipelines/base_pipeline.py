@@ -17,6 +17,7 @@ Abstracts for the Pipeline class.
 """
 from __future__ import annotations
 
+from nerfstudio.utils.rich_utils import CONSOLE
 import typing
 from abc import abstractmethod
 from dataclasses import dataclass, field
@@ -262,6 +263,8 @@ class VanillaPipeline(Pipeline):
         if world_size > 1:
             self._model = typing.cast(Model, DDP(self._model, device_ids=[local_rank], find_unused_parameters=True))
             dist.barrier(device_ids=[local_rank])
+            
+        print(self)
 
     @property
     def device(self):
@@ -304,6 +307,7 @@ class VanillaPipeline(Pipeline):
         raise NotImplementedError
 
     @profiler.time_function
+    @torch.no_grad()
     def get_eval_loss_dict(self, step: int) -> Tuple[Any, Dict[str, Any], Dict[str, Any]]:
         """This function gets your evaluation loss dict. It needs to get the data
         from the DataManager and feed it to the model's forward function
@@ -311,6 +315,7 @@ class VanillaPipeline(Pipeline):
         Args:
             step: current iteration step
         """
+        CONSOLE.print("Evaluating loss...")
         self.eval()
         ray_bundle, batch = self.datamanager.next_eval(step)
         model_outputs = self.model(ray_bundle)
@@ -320,6 +325,7 @@ class VanillaPipeline(Pipeline):
         return model_outputs, loss_dict, metrics_dict
 
     @profiler.time_function
+    @torch.no_grad()
     def get_eval_image_metrics_and_images(self, step: int):
         """This function gets your evaluation loss dict. It needs to get the data
         from the DataManager and feed it to the model's forward function
@@ -327,6 +333,7 @@ class VanillaPipeline(Pipeline):
         Args:
             step: current iteration step
         """
+        CONSOLE.print("Evaluating loss...")
         self.eval()
         image_idx, camera_ray_bundle, batch = self.datamanager.next_eval_image(step)
         outputs = self.model.get_outputs_for_camera_ray_bundle(camera_ray_bundle)

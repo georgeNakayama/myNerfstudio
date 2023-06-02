@@ -23,9 +23,9 @@ cimle_config = MethodSpecification(
             ),
             model=cIMLEVanillaModelConfig(cimle_ch=CIMLE_CH, head_only=True),
             cimle_sample_num=20,
-            cimle_cache_interval=2000,
+            cimle_cache_interval=100000,
             cimle_ch=CIMLE_CH,
-            cimle_num_rays_to_test=100*100
+            cimle_num_rays_to_test=200*200
         ),
         optimizers={
             "fields": {
