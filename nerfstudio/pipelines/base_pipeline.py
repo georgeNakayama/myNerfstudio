@@ -176,6 +176,11 @@ class Pipeline(nn.Module):
     @profiler.time_function
     def get_average_eval_image_metrics(self, step: Optional[int] = None):
         """Iterate over all the images in the eval dataset and get the average."""
+        
+    @abstractmethod
+    @profiler.time_function
+    def get_average_test_images_and_metrics(self, step: Optional[int] = None) -> Tuple[Any, Any]:
+        """Iterate over all the images in the test dataset and get the average."""
 
     def load_pipeline(self, loaded_state: Dict[str, Any], step: int) -> None:
         """Load the checkpoint from the given path
@@ -283,7 +288,6 @@ class VanillaPipeline(Pipeline):
         ray_bundle, batch = self.datamanager.next_train(step)
         model_outputs = self._model(ray_bundle)  # train distributed data parallel model if world_size > 1
         metrics_dict = self.model.get_metrics_dict(model_outputs, batch)
-
         if self.config.datamanager.camera_optimizer is not None:
             camera_opt_param_group = self.config.datamanager.camera_optimizer.param_group
             if camera_opt_param_group in self.datamanager.get_param_groups():
@@ -315,10 +319,9 @@ class VanillaPipeline(Pipeline):
         Args:
             step: current iteration step
         """
-        CONSOLE.print("Evaluating loss...")
         self.eval()
         ray_bundle, batch = self.datamanager.next_eval(step)
-        model_outputs = self.model(ray_bundle)
+        model_outputs = self.model(ray_bundle, sample_latent=True)
         metrics_dict = self.model.get_metrics_dict(model_outputs, batch)
         loss_dict = self.model.get_loss_dict(model_outputs, batch, metrics_dict)
         self.train()
@@ -333,7 +336,6 @@ class VanillaPipeline(Pipeline):
         Args:
             step: current iteration step
         """
-        CONSOLE.print("Evaluating loss...")
         self.eval()
         image_idx, camera_ray_bundle, batch = self.datamanager.next_eval_image(step)
         outputs = self.model.get_outputs_for_camera_ray_bundle(camera_ray_bundle)
@@ -344,6 +346,71 @@ class VanillaPipeline(Pipeline):
         metrics_dict["num_rays"] = len(camera_ray_bundle)
         self.train()
         return metrics_dict, images_dict
+    
+    @profiler.time_function
+    @torch.no_grad()
+    def get_train_image_metrics_and_images(self, step: int):
+        """This function gets your training loss dict. It needs to get the data
+        from the DataManager and feed it to the model's forward function
+
+        Args:
+            step: current iteration step
+        """
+        self.eval()
+        image_idx, camera_ray_bundle, batch = self.datamanager.next_train_image(step)
+        outputs = self.model.get_outputs_for_camera_ray_bundle(camera_ray_bundle)
+        metrics_dict, images_dict = self.model.get_image_metrics_and_images(outputs, batch)
+        assert "image_idx" not in metrics_dict
+        metrics_dict["image_idx"] = image_idx
+        assert "num_rays" not in metrics_dict
+        metrics_dict["num_rays"] = len(camera_ray_bundle)
+        self.train()
+        return metrics_dict, images_dict
+
+
+    @profiler.time_function
+    def get_average_test_images_and_metrics(self, step: Optional[int] = None):
+        """Iterate over all the images in the eval dataset and get the average.
+
+        Returns:
+            metrics_dict: dictionary of metrics
+        """
+        self.eval()
+        metrics_dict_list = []
+        total_image_dict = {}
+        num_images = len(self.datamanager.fixed_indices_test_dataloader)
+        with Progress(
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TimeElapsedColumn(),
+            MofNCompleteColumn(),
+            transient=True,
+        ) as progress:
+            task = progress.add_task("[green]Evaluating all test images...", total=num_images)
+            for i, (camera_ray_bundle, batch) in enumerate(self.datamanager.fixed_indices_test_dataloader):
+                # time this the following line
+                inner_start = time()
+                height, width = camera_ray_bundle.shape
+                num_rays = height * width
+                outputs = self.model.get_outputs_for_camera_ray_bundle(camera_ray_bundle)
+                metrics_dict, images_dict = self.model.get_image_metrics_and_images(outputs, batch)
+                for k, v in images_dict.items():
+                    total_image_dict[f"{k}_{i}"] = v
+                assert "num_rays_per_sec" not in metrics_dict
+                metrics_dict["num_rays_per_sec"] = num_rays / (time() - inner_start)
+                fps_str = "fps"
+                assert fps_str not in metrics_dict
+                metrics_dict[fps_str] = metrics_dict["num_rays_per_sec"] / (height * width)
+                metrics_dict_list.append(metrics_dict)
+                progress.advance(task)
+        # average the metrics list
+        metrics_dict = {}
+        for key in metrics_dict_list[0].keys():
+            metrics_dict[key] = float(
+                torch.mean(torch.tensor([metrics_dict[key] for metrics_dict in metrics_dict_list]))
+            )
+        self.train()
+        return metrics_dict, total_image_dict
 
     @profiler.time_function
     def get_average_eval_image_metrics(self, step: Optional[int] = None):

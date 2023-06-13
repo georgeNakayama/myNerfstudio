@@ -42,6 +42,7 @@ from nerfstudio.model_components.renderers import (
 )
 from nerfstudio.models.base_model import Model, ModelConfig
 from nerfstudio.utils import colormaps, colors, misc
+from nerfstudio.model_components.scene_colliders import NearFarCollider
 
 
 @dataclass
@@ -49,6 +50,10 @@ class VanillaModelConfig(ModelConfig):
     """Vanilla Model Config"""
 
     _target: Type = field(default_factory=lambda: NeRFModel)
+    near_plane: float = 0.05
+    """How far along the ray to start sampling."""
+    far_plane: float = 10
+    """How far along the ray to stop sampling."""
     num_coarse_samples: int = 64
     """Number of samples in coarse field evaluation"""
     num_importance_samples: int = 128
@@ -126,6 +131,9 @@ class NeRFModel(Model):
             params = self.config.temporal_distortion_params
             kind = params.pop("kind")
             self.temporal_distortion = kind.to_temporal_distortion(params)
+            
+        # collider
+        self.collider = NearFarCollider(near_plane=self.config.near_plane, far_plane=self.config.far_plane)
 
     def get_param_groups(self) -> Dict[str, List[Parameter]]:
         param_groups = {}
@@ -212,14 +220,14 @@ class NeRFModel(Model):
         depth_coarse = colormaps.apply_depth_colormap(
             outputs["depth_coarse"],
             accumulation=outputs["accumulation_coarse"],
-            near_plane=self.config.collider_params["near_plane"],
-            far_plane=self.config.collider_params["far_plane"],
+            near_plane=self.config.near_plane,
+            far_plane=self.config.far_plane,
         )
         depth_fine = colormaps.apply_depth_colormap(
             outputs["depth_fine"],
             accumulation=outputs["accumulation_fine"],
-            near_plane=self.config.collider_params["near_plane"],
-            far_plane=self.config.collider_params["far_plane"],
+            near_plane=self.config.near_plane,
+            far_plane=self.config.far_plane,
         )
 
         combined_rgb = torch.cat([image, rgb_coarse, rgb_fine], dim=1)

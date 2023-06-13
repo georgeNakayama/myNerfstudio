@@ -163,8 +163,10 @@ class DataManager(nn.Module):
 
     train_dataset: Optional[InputDataset] = None
     eval_dataset: Optional[InputDataset] = None
+    test_dataset: Optional[InputDataset] = None
     train_sampler: Optional[DistributedSampler] = None
     eval_sampler: Optional[DistributedSampler] = None
+    test_sampler: Optional[DistributedSampler] = None
     includes_time: bool = False
 
     def __init__(self):
@@ -179,10 +181,13 @@ class DataManager(nn.Module):
         super().__init__()
         self.train_count = 0
         self.eval_count = 0
+        self.test_count = 0
         if self.train_dataset and self.test_mode != "inference":
             self.setup_train()
         if self.eval_dataset and self.test_mode != "inference":
             self.setup_eval()
+        if self.test_dataset and self.test_mode != "inference":
+            self.setup_test()
 
     def forward(self):
         """Blank forward method
@@ -204,6 +209,13 @@ class DataManager(nn.Module):
         This only exists to assist the get_eval_iterable function, since we need to pass
         in an __iter__ function for our trivial iterable that we are making."""
         self.eval_count = 0
+        
+    def iter_test(self):
+        """The __iter__ function for the test iterator.
+
+        This only exists to assist the get_test_iterable function, since we need to pass
+        in an __iter__ function for our trivial iterable that we are making."""
+        self.test_count = 0
 
     def get_train_iterable(self, length=-1) -> IterableWrapper:
         """Gets a trivial pythonic iterator that will use the iter_train and next_train functions
@@ -228,6 +240,18 @@ class DataManager(nn.Module):
         methods (methods bound to our DataManager instance in this case) specified in the constructor.
         """
         return IterableWrapper(self.iter_eval, self.next_eval, length)
+    
+    def get_test_iterable(self, length=-1) -> IterableWrapper:
+        """Gets a trivial pythonic iterator that will use the iter_test and next_test functions
+        as __iter__ and __next__ methods respectively.
+
+        This basically is just a little utility if you want to do something like:
+        |    for ray_bundle, batch in datamanager.get_eval_iterable():
+        |        <eval code here>
+        since the returned IterableWrapper is just an iterator with the __iter__ and __next__
+        methods (methods bound to our DataManager instance in this case) specified in the constructor.
+        """
+        return IterableWrapper(self.iter_test, self.next_test, length)
 
     @abstractmethod
     def setup_train(self):
@@ -238,6 +262,10 @@ class DataManager(nn.Module):
     @abstractmethod
     def setup_eval(self):
         """Sets up the data manager for evaluation"""
+
+    @abstractmethod
+    def setup_test(self):
+        """Sets up the data manager for test evaluation"""
 
     @abstractmethod
     def next_train(self, step: int) -> Tuple[RayBundle, Dict]:
@@ -262,9 +290,34 @@ class DataManager(nn.Module):
             such as the groundtruth image.
         """
         raise NotImplementedError
+    
+    @abstractmethod
+    def next_test(self, step: int) -> Tuple[RayBundle, Dict]:
+        """Returns the next batch of data from the test data manager.
+
+        Args:
+            step: the step number of the test image to retrieve
+        Returns:
+            A tuple of the ray bundle for the image, and a dictionary of additional batch information
+            such as the groundtruth image.
+        """
+        raise NotImplementedError
 
     @abstractmethod
     def next_eval_image(self, step: int) -> Tuple[int, RayBundle, Dict]:
+        """Retrieve the next eval image.
+
+        Args:
+            step: the step number of the eval image to retrieve
+        Returns:
+            A tuple of the step number, the ray bundle for the image, and a dictionary of
+            additional batch information such as the groundtruth image.
+        """
+        raise NotImplementedError
+    
+    
+    @abstractmethod
+    def next_test_image(self, step: int) -> Tuple[int, RayBundle, Dict]:
         """Retrieve the next eval image.
 
         Args:
@@ -282,6 +335,11 @@ class DataManager(nn.Module):
 
     @abstractmethod
     def get_eval_rays_per_batch(self) -> int:
+        """Returns the number of rays per batch for evaluation."""
+        raise NotImplementedError
+    
+    @abstractmethod
+    def get_test_rays_per_batch(self) -> int:
         """Returns the number of rays per batch for evaluation."""
         raise NotImplementedError
 
@@ -329,6 +387,15 @@ class VanillaDataManagerConfig(DataManagerConfig):
     new images. If -1, never pick new images."""
     eval_image_indices: Optional[Tuple[int, ...]] = (0,)
     """Specifies the image indices to use during eval; if None, uses all."""
+    test_num_rays_per_batch: int = 1024
+    """Number of rays per batch to use per test iteration."""
+    test_num_images_to_sample_from: int = -1
+    """Number of images to sample during test iteration."""
+    test_num_times_to_repeat_images: int = -1
+    """When not evaluating on all images, number of iterations before picking
+    new images. If -1, never pick new images."""
+    test_image_indices: Optional[Tuple[int, ...]] = (0,)
+    """Specifies the image indices to use during test; if None, uses all."""
     camera_optimizer: CameraOptimizerConfig = CameraOptimizerConfig()
     """Specifies the camera pose optimizer used during training. Helpful if poses are noisy, such as for data from
     Record3D."""
@@ -361,9 +428,14 @@ class VanillaDataManager(DataManager, Generic[TDataset]):
     config: VanillaDataManagerConfig
     train_dataset: TDataset
     eval_dataset: TDataset
+    test_dataset: TDataset
+    fixed_indices_train_dataloader: Optional[FixedIndicesEvalDataloader]=None
+    fixed_indices_eval_dataloader: Optional[FixedIndicesEvalDataloader]=None
+    fixed_indices_test_dataloader: Optional[FixedIndicesEvalDataloader]=None
     train_dataparser_outputs: DataparserOutputs
     train_pixel_sampler: Optional[PixelSampler] = None
     eval_pixel_sampler: Optional[PixelSampler] = None
+    test_pixel_sampler: Optional[PixelSampler] = None
 
     def __init__(
         self,
@@ -393,6 +465,7 @@ class VanillaDataManager(DataManager, Generic[TDataset]):
 
         self.train_dataset = self.create_train_dataset()
         self.eval_dataset = self.create_eval_dataset()
+        self.test_dataset = self.create_test_dataset()
 
         if self.train_dataparser_outputs is not None:
             cameras = self.train_dataparser_outputs.cameras
@@ -422,7 +495,14 @@ class VanillaDataManager(DataManager, Generic[TDataset]):
     def create_eval_dataset(self) -> TDataset:
         """Sets up the data loaders for evaluation"""
         return self.dataset_type(
-            dataparser_outputs=self.dataparser.get_dataparser_outputs(split=self.test_split),
+            dataparser_outputs=self.dataparser.get_dataparser_outputs(split="val"),
+            scale_factor=self.config.camera_res_scale_factor,
+        )
+        
+    def create_test_dataset(self) -> TDataset:
+        """Sets up the data loaders for evaluation"""
+        return self.dataset_type(
+            dataparser_outputs=self.dataparser.get_dataparser_outputs(split="test"),
             scale_factor=self.config.camera_res_scale_factor,
         )
 
@@ -462,6 +542,17 @@ class VanillaDataManager(DataManager, Generic[TDataset]):
             self.train_dataset.cameras.to(self.device),
             self.train_camera_optimizer,
         )
+        # for loading full images
+        self.fixed_indices_train_dataloader = FixedIndicesEvalDataloader(
+            input_dataset=self.train_dataset,
+            device=self.device,
+            num_workers=self.world_size * 4,
+        )
+        self.train_dataloader = RandIndicesEvalDataloader(
+            input_dataset=self.train_dataset,
+            device=self.device,
+            num_workers=self.world_size * 4,
+        )
 
     def setup_eval(self):
         """Sets up the data loader for evaluation"""
@@ -497,6 +588,40 @@ class VanillaDataManager(DataManager, Generic[TDataset]):
             num_workers=self.world_size * 4,
         )
 
+    def setup_test(self):
+        """Sets up the data loader for test"""
+        assert self.test_dataset is not None
+        CONSOLE.print("Setting up test dataset...")
+        self.test_image_dataloader = CacheDataloader(
+            self.test_dataset,
+            num_images_to_sample_from=self.config.test_num_images_to_sample_from,
+            num_times_to_repeat_images=self.config.test_num_times_to_repeat_images,
+            device=self.device,
+            num_workers=self.world_size * 4,
+            pin_memory=True,
+            collate_fn=self.config.collate_fn,
+        )
+        self.iter_test_image_dataloader = iter(self.test_image_dataloader)
+        self.test_pixel_sampler = self._get_pixel_sampler(self.test_dataset, self.config.test_num_rays_per_batch)
+        self.test_camera_optimizer = self.config.camera_optimizer.setup(
+            num_cameras=self.test_dataset.cameras.size, device=self.device
+        )
+        self.test_ray_generator = RayGenerator(
+            self.test_dataset.cameras.to(self.device),
+            self.test_camera_optimizer,
+        )
+        # for loading full test images
+        self.fixed_indices_test_dataloader = FixedIndicesEvalDataloader(
+            input_dataset=self.test_dataset,
+            device=self.device,
+            num_workers=self.world_size * 4,
+        )
+        self.test_dataloader = RandIndicesEvalDataloader(
+            input_dataset=self.test_dataset,
+            device=self.device,
+            num_workers=self.world_size * 4,
+        )
+
     def next_train(self, step: int) -> Tuple[RayBundle, Dict]:
         """Returns the next batch of data from the train dataloader."""
         self.train_count += 1
@@ -518,6 +643,17 @@ class VanillaDataManager(DataManager, Generic[TDataset]):
         ray_indices = batch["indices"]
         ray_bundle = self.eval_ray_generator(ray_indices)
         return ray_bundle, batch
+    
+    def next_test(self, step: int) -> Tuple[RayBundle, Dict]:
+        """Returns the next batch of data from the test dataloader."""
+        self.test_count += 1
+        image_batch = next(self.iter_test_image_dataloader)
+        assert self.test_pixel_sampler is not None
+        assert isinstance(image_batch, dict)
+        batch = self.test_pixel_sampler.sample(image_batch)
+        ray_indices = batch["indices"]
+        ray_bundle = self.test_ray_generator(ray_indices)
+        return ray_bundle, batch
 
     def next_eval_image(self, step: int) -> Tuple[int, RayBundle, Dict]:
         for camera_ray_bundle, batch in self.eval_dataloader:
@@ -525,9 +661,26 @@ class VanillaDataManager(DataManager, Generic[TDataset]):
             image_idx = int(camera_ray_bundle.camera_indices[0, 0, 0])
             return image_idx, camera_ray_bundle, batch
         raise ValueError("No more eval images")
+    
+    def next_test_image(self, step: int) -> Tuple[int, RayBundle, Dict]:
+        for camera_ray_bundle, batch in self.test_dataloader:
+            assert camera_ray_bundle.camera_indices is not None
+            image_idx = int(camera_ray_bundle.camera_indices[0, 0, 0])
+            return image_idx, camera_ray_bundle, batch
+        raise ValueError("No more test images")
+    
+    def next_train_image(self, step: int) -> Tuple[int, RayBundle, Dict]:
+        for camera_ray_bundle, batch in self.train_dataloader:
+            assert camera_ray_bundle.camera_indices is not None
+            image_idx = int(camera_ray_bundle.camera_indices[0, 0, 0])
+            return image_idx, camera_ray_bundle, batch
+        raise ValueError("No more train images")
 
     def get_train_rays_per_batch(self) -> int:
         return self.config.train_num_rays_per_batch
+    
+    def get_test_rays_per_batch(self) -> int:
+        return self.config.test_num_rays_per_batch
 
     def get_eval_rays_per_batch(self) -> int:
         return self.config.eval_num_rays_per_batch

@@ -17,10 +17,11 @@ Field for compound nerf model, adds scene contraction and image embeddings to in
 """
 
 
-from typing import Dict, Literal, Optional, Tuple
+from typing import Dict, Literal, Optional, Tuple, List
 
 import torch
 from torch import Tensor, nn
+from torch.nn import Parameter
 
 from nerfstudio.cameras.rays import RaySamples
 from nerfstudio.data.scene_box import SceneBox
@@ -38,9 +39,10 @@ from nerfstudio.field_components.field_heads import (
 from nerfstudio.field_components.mlp import MLP
 from nerfstudio.field_components.spatial_distortions import SpatialDistortion
 from nerfstudio.fields.base_field import Field, shift_directions_for_tcnn
+from nerfstudio.fields.nerfacto_field import NerfactoField
 
 
-class NerfactoField(Field):
+class cIMLENerfactoField(NerfactoField):
     """Compound Field that uses TCNN
 
     Args:
@@ -72,6 +74,8 @@ class NerfactoField(Field):
         self,
         aabb: Tensor,
         num_images: int,
+        color_cimle: bool=True,
+        cimle_ch: int=32,
         num_layers: int = 2,
         hidden_dim: int = 64,
         geo_feat_dim: int = 15,
@@ -93,113 +97,81 @@ class NerfactoField(Field):
         spatial_distortion: Optional[SpatialDistortion] = None,
         implementation: Literal["tcnn", "torch"] = "tcnn",
     ) -> None:
-        super().__init__()
-
-        self.register_buffer("aabb", aabb)
-        self.geo_feat_dim = geo_feat_dim
-
-        self.register_buffer("max_res", torch.tensor(max_res))
-        self.register_buffer("num_levels", torch.tensor(num_levels))
-        self.register_buffer("log2_hashmap_size", torch.tensor(log2_hashmap_size))
-
-        self.spatial_distortion = spatial_distortion
-        self.num_images = num_images
-        self.appearance_embedding_dim = appearance_embedding_dim
-        self.embedding_appearance = Embedding(self.num_images, self.appearance_embedding_dim)
-        self.use_average_appearance_embedding = use_average_appearance_embedding
-        self.use_transient_embedding = use_transient_embedding
-        self.use_semantics = use_semantics
-        self.use_pred_normals = use_pred_normals
-        self.pass_semantic_gradients = pass_semantic_gradients
-
-        base_res: int = 16
-        features_per_level: int = 2
-
-        self.direction_encoding = SHEncoding(
-            levels=4,
-            implementation=implementation,
-        )
-
-        self.position_encoding = NeRFEncoding(
-            in_dim=3, num_frequencies=2, min_freq_exp=0, max_freq_exp=2 - 1, implementation=implementation
-        )
-
-        encoder = HashEncoding(
+        super().__init__(
+            aabb,
+            num_images,
+            num_layers=num_layers,
+            hidden_dim=hidden_dim,
+            geo_feat_dim=geo_feat_dim,
             num_levels=num_levels,
-            min_res=base_res,
             max_res=max_res,
             log2_hashmap_size=log2_hashmap_size,
-            features_per_level=features_per_level,
-            implementation=implementation,
-        )
-        network = MLP(
-            in_dim=encoder.get_out_dim(),
-            num_layers=num_layers,
-            layer_width=hidden_dim,
-            out_dim=1 + self.geo_feat_dim,
-            activation=nn.ReLU(),
-            out_activation=None,
-            implementation=implementation,
-        )
-        self.mlp_base = torch.nn.Sequential(encoder, network)
-
-        # transients
-        if self.use_transient_embedding:
-            self.transient_embedding_dim = transient_embedding_dim
-            self.embedding_transient = Embedding(self.num_images, self.transient_embedding_dim)
-            self.mlp_transient = MLP(
-                in_dim=self.geo_feat_dim + self.transient_embedding_dim,
-                num_layers=num_layers_transient,
-                layer_width=hidden_dim_transient,
-                out_dim=hidden_dim_transient,
+            num_layers_color=num_layers_color,
+            num_layers_transient=num_layers_color,
+            hidden_dim_color=hidden_dim_color,
+            hidden_dim_transient=hidden_dim_transient,
+            appearance_embedding_dim=appearance_embedding_dim,
+            transient_embedding_dim=transient_embedding_dim,
+            use_transient_embedding=use_transient_embedding,
+            use_semantics=use_semantics,
+            num_semantic_classes=num_semantic_classes,
+            pass_semantic_gradients=pass_semantic_gradients,
+            use_pred_normals=use_pred_normals,
+            use_average_appearance_embedding=use_average_appearance_embedding,
+            spatial_distortion=spatial_distortion,
+            implementation=implementation
+            )
+        self.cimle_ch = cimle_ch
+        self.color_cimle=color_cimle
+        self.cimle_linear = nn.Sequential(nn.Linear(cimle_ch, cimle_ch), nn.ReLU())
+        if color_cimle:
+            self.mlp_head = MLP(
+                in_dim=self.direction_encoding.get_out_dim() + self.geo_feat_dim + cimle_ch,
+                num_layers=num_layers_color,
+                layer_width=hidden_dim_color,
+                out_dim=3,
+                activation=nn.ReLU(),
+                out_activation=nn.Sigmoid(),
+                implementation=implementation,
+            )
+        else:
+            base_res: int = 16
+            features_per_level: int = 2
+            encoder = HashEncoding(
+                num_levels=num_levels,
+                min_res=base_res,
+                max_res=max_res,
+                log2_hashmap_size=log2_hashmap_size,
+                features_per_level=features_per_level,
+                implementation=implementation,
+            )
+            network = MLP(
+                in_dim=encoder.get_out_dim() + cimle_ch,
+                num_layers=num_layers,
+                layer_width=hidden_dim,
+                out_dim=1 + self.geo_feat_dim,
                 activation=nn.ReLU(),
                 out_activation=None,
                 implementation=implementation,
             )
-            self.field_head_transient_uncertainty = UncertaintyFieldHead(in_dim=self.mlp_transient.get_out_dim())
-            self.field_head_transient_rgb = TransientRGBFieldHead(in_dim=self.mlp_transient.get_out_dim())
-            self.field_head_transient_density = TransientDensityFieldHead(in_dim=self.mlp_transient.get_out_dim())
+            self.mlp_base = torch.nn.Sequential(encoder, network)
 
-        # semantics
-        if self.use_semantics:
-            self.mlp_semantics = MLP(
-                in_dim=self.geo_feat_dim,
-                num_layers=2,
-                layer_width=64,
-                out_dim=hidden_dim_transient,
-                activation=nn.ReLU(),
-                out_activation=None,
-                implementation=implementation,
-            )
-            self.field_head_semantics = SemanticFieldHead(
-                in_dim=self.mlp_semantics.get_out_dim(), num_classes=num_semantic_classes
-            )
+    def get_param_group(self) -> Dict[str, List[Parameter]]:
+        param_groups = {'fields':[], 'cimle':[]}
+        for name, params in self.named_parameters():
+            if 'cimle' in name:
+                param_groups['cimle'].append(params)
+            else:
+                param_groups['fields'].append(params)
+        return param_groups
 
-        # predicted normals
-        if self.use_pred_normals:
-            self.mlp_pred_normals = MLP(
-                in_dim=self.geo_feat_dim + self.position_encoding.get_out_dim(),
-                num_layers=3,
-                layer_width=64,
-                out_dim=hidden_dim_transient,
-                activation=nn.ReLU(),
-                out_activation=None,
-                implementation=implementation,
-            )
-            self.field_head_pred_normals = PredNormalsFieldHead(in_dim=self.mlp_pred_normals.get_out_dim())
-
-        self.mlp_head = MLP(
-            in_dim=self.direction_encoding.get_out_dim() + self.geo_feat_dim + self.appearance_embedding_dim,
-            num_layers=num_layers_color,
-            layer_width=hidden_dim_color,
-            out_dim=3,
-            activation=nn.ReLU(),
-            out_activation=nn.Sigmoid(),
-            implementation=implementation,
-        )
 
     def get_density(self, ray_samples: RaySamples) -> Tuple[Tensor, Tensor]:
         """Computes and returns the densities."""
+        if self.color_cimle:
+            return super().get_density(ray_samples)
+        
+        # else 
         if self.spatial_distortion is not None:
             positions = ray_samples.frustums.get_positions()
             positions = self.spatial_distortion(positions)
@@ -213,7 +185,16 @@ class NerfactoField(Field):
         if not self._sample_locations.requires_grad:
             self._sample_locations.requires_grad = True
         positions_flat = positions.view(-1, 3)
-        h = self.mlp_base(positions_flat).view(*ray_samples.frustums.shape, -1)
+        h_table_latents = self.mlp_base[0](positions_flat)
+        
+        # cimle
+        zs = ray_samples.metadata["cimle_latent"]
+        assert zs.shape[-1] == self.cimle_ch
+        cimle_embedding = self.cimle_linear(zs)
+        # print(h_table_latents.shape, cimle_embedding.shape)
+        h_table_latents = torch.cat([h_table_latents, cimle_embedding.view(-1, self.cimle_ch)], dim=-1)
+        h = self.mlp_base[1](h_table_latents).view(*ray_samples.frustums.shape, -1)
+        
         density_before_activation, base_mlp_out = torch.split(h, [1, self.geo_feat_dim], dim=-1)
         self._density_before_activation = density_before_activation
 
@@ -223,10 +204,14 @@ class NerfactoField(Field):
         density = trunc_exp(density_before_activation.to(positions))
         density = density * selector[..., None]
         return density, base_mlp_out
-
+    
     def get_outputs(
         self, ray_samples: RaySamples, density_embedding: Optional[Tensor] = None
     ) -> Dict[FieldHeadNames, Tensor]:
+        if not self.color_cimle:
+            return super().get_outputs(ray_samples, density_embedding)
+        
+        # else
         assert density_embedding is not None
         outputs = {}
         if ray_samples.camera_indices is None:
@@ -238,20 +223,12 @@ class NerfactoField(Field):
 
         outputs_shape = ray_samples.frustums.directions.shape[:-1]
 
-        # appearance
-        if self.appearance_embedding_dim <= 0:
-            if self.training:
-                embedded_appearance = self.embedding_appearance(camera_indices)
-            else:
-                if self.use_average_appearance_embedding:
-                    embedded_appearance = torch.ones(
-                        (*directions.shape[:-1], self.appearance_embedding_dim), device=directions.device
-                    ) * self.embedding_appearance.mean(dim=0)
-                else:
-                    embedded_appearance = torch.zeros(
-                        (*directions.shape[:-1], self.appearance_embedding_dim), device=directions.device
-                    )
-        print(self.appearance_embedding_dim)
+        # cimle
+        zs = ray_samples.metadata["cimle_latent"]
+        assert zs.shape[-1] == self.cimle_ch
+        cimle_embedding = self.cimle_linear(zs)
+
+
         # transients
         if self.use_transient_embedding and self.training:
             embedded_transient = self.embedding_transient(camera_indices)
@@ -290,10 +267,7 @@ class NerfactoField(Field):
             [
                 d,
                 density_embedding.view(-1, self.geo_feat_dim),
-                embedded_appearance.view(-1, self.appearance_embedding_dim),
-            ] if self.appearance_embedding_dim > 0 else [
-                d,
-                density_embedding.view(-1, self.geo_feat_dim)
+                cimle_embedding.view(-1, self.cimle_ch),
             ],
             dim=-1,
         )
