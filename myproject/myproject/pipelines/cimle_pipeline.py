@@ -34,7 +34,7 @@ from jaxtyping import Shaped
 from torch.cuda.amp.grad_scaler import GradScaler
 
 
-from .cimle_datamanager import cIMLEDataManager
+from myproject.data.datamanagers.cimle_datamanager import cIMLEDataManager
 from nerfstudio.engine.callbacks import TrainingCallback, TrainingCallbackAttributes, TrainingCallbackLocation
 from nerfstudio.utils import profiler
 from nerfstudio.pipelines.base_pipeline import VanillaPipeline, VanillaPipelineConfig
@@ -99,9 +99,21 @@ class cIMLEPipeline(VanillaPipeline):
         self.cimle_ch=config.cimle_ch
         self.cimle_cache_interval=config.cimle_cache_interval
 
-                
+    def load_pipeline(self, loaded_state: Dict[str, Any], step: int) -> None:
+        """Load the checkpoint from the given path
+
+        Args:
+            loaded_state: pre-trained model state dict
+            step: training step of the loaded checkpoint
+        """
+        super().load_pipeline(loaded_state, step)
+        cache_latents(self, step)
+    
+    
+    
     @profiler.time_function
-    def get_eval_loss_dict(self, step: int, z: Optional[Shaped[Tensor, "num_rays, cimle_ch"]] = None) -> Tuple[Any, Dict[str, Any], Dict[str, Any]]:
+    @torch.no_grad()
+    def get_eval_loss_dict(self, step: int, z: Optional[Shaped[Tensor, "num_rays, cimle_ch"]] = None, num_samples: int=1) -> Tuple[Any, Dict[str, Any], Dict[str, Any]]:
         """This function gets your evaluation loss dict. It needs to get the data
         from the DataManager and feed it to the model's forward function
 
@@ -112,46 +124,63 @@ class cIMLEPipeline(VanillaPipeline):
         ray_bundle, batch = self.datamanager.next_eval(step)
         num_latents = torch.unique(batch['indices'][:, 0]).shape[0]
         if z is None:
-            z = torch.normal(0.0, 1.0, size=(num_latents, self.cimle_ch), device=self.device)
-        scattered_z = torch.gather(z, 0, batch['indices'][:, :1].expand(-1, self.cimle_ch).to(self.device))
-        ray_bundle.metadata["cimle_latent"] = scattered_z
-        assert scattered_z.shape[0] == len(ray_bundle)
-        model_outputs = self.model(ray_bundle)
-        metrics_dict = self.model.get_metrics_dict(model_outputs, batch)
-        loss_dict = self.model.get_loss_dict(model_outputs, batch, metrics_dict)
+            z = torch.normal(0.0, 1.0, size=(num_samples, num_latents, self.cimle_ch), device=self.device)
+        scattered_z = torch.gather(z, 1, batch['indices'][:, :1].reshape(1, -1, 1).expand(num_samples, -1, self.cimle_ch).to(self.device))
+        assert scattered_z.shape[1] == len(ray_bundle)
+        assert scattered_z.shape[0] == num_samples
+        all_loss_dict = []
+        all_metrics_dict = []
+        all_model_outputs = []
+        for i in range(num_samples):
+            ray_bundle.metadata["cimle_latent"] = scattered_z[i]
+            model_outputs = self.model(ray_bundle)
+            metrics_dict = self.model.get_metrics_dict(model_outputs, batch)
+            loss_dict = self.model.get_loss_dict(model_outputs, batch, metrics_dict)
+            all_loss_dict.append(loss_dict)
+            all_metrics_dict.append(metrics_dict)
+            all_model_outputs.append(model_outputs)
         self.train()
-        return model_outputs, loss_dict, metrics_dict
+        return all_model_outputs, all_loss_dict, all_metrics_dict
     
     @profiler.time_function
     def get_eval_image_metrics_and_images(self, 
                                           step: int, 
-                                          z: Optional[Shaped[Tensor, "num_rays, cimle_ch"]] = None
+                                          z: Optional[Shaped[Tensor, "num_rays, cimle_ch"]] = None,
+                                          num_samples: int=1
                                           ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """This function gets your evaluation loss dict. It needs to get the data
         from the DataManager and feed it to the model's forward function
 
         Args:
             step: current iteration step
+            z: optional cimle latent used for evaluation 
+            num_samples: number of cimle samples to query. 
         """
         self.eval()
         image_idx, camera_ray_bundle, batch = self.datamanager.next_eval_image(step)
         if z is None:
-            z = torch.normal(0.0, 1.0, size=(1, 1, self.cimle_ch), device=self.device)
+            z = torch.normal(0.0, 1.0, size=(num_samples, 1, 1, self.cimle_ch), device=self.device)
         height, width = camera_ray_bundle.shape
-        camera_ray_bundle.metadata["cimle_latent"] = z.reshape(1, 1, -1).expand(height, width, -1)
-        outputs = self.model.get_outputs_for_camera_ray_bundle(camera_ray_bundle)
-        metrics_dict, images_dict = self.model.get_image_metrics_and_images(outputs, batch)
-        assert "image_idx" not in metrics_dict
-        metrics_dict["image_idx"] = image_idx
-        assert "num_rays" not in metrics_dict
-        metrics_dict["num_rays"] = len(camera_ray_bundle)
+        all_metrics_dicts = []
+        all_images_dicts = []
+        for i in range(num_samples):
+            camera_ray_bundle.metadata["cimle_latent"] = z[i].reshape(1, 1, -1).expand(height, width, -1)
+            outputs = self.model.get_outputs_for_camera_ray_bundle(camera_ray_bundle)
+            metrics_dict, images_dict = self.model.get_image_metrics_and_images(outputs, batch)
+            assert "image_idx" not in metrics_dict
+            metrics_dict["image_idx"] = image_idx
+            assert "num_rays" not in metrics_dict
+            metrics_dict["num_rays"] = len(camera_ray_bundle)
+            all_metrics_dicts.append(metrics_dict)
+            all_images_dicts.append(images_dict)
         self.train()
-        return metrics_dict, images_dict
+        return all_metrics_dicts, all_images_dicts
     
     @profiler.time_function
     def get_average_eval_image_metrics(self, 
                                        step: Optional[int] = None, 
-                                       z: Optional[Shaped[Tensor, "num_rays, cimle_ch"]] = None
+                                       z: Optional[Shaped[Tensor, "num_rays, cimle_ch"]] = None,
+                                       num_samples: int=1
                                        ) -> Dict[str, Any]:
         """Iterate over all the images in the eval dataset and get the average.
 
@@ -159,7 +188,7 @@ class cIMLEPipeline(VanillaPipeline):
             metrics_dict: dictionary of metrics
         """
         self.eval()
-        metrics_dict_list = []
+        metrics_dict_lists = [[] for _ in range(num_samples)]
         num_images = len(self.datamanager.fixed_indices_eval_dataloader)
         with Progress(
             TextColumn("[progress.description]{task.description}"),
@@ -169,30 +198,40 @@ class cIMLEPipeline(VanillaPipeline):
             transient=True,
         ) as progress:
             task = progress.add_task("[green]Evaluating all eval images...", total=num_images)
-            for camera_ray_bundle, batch in self.datamanager.fixed_indices_eval_dataloader:
+            task_inner = progress.add_task(f"[green]Evaluating latent sample for image 0...", total=num_samples)
+            for n, (camera_ray_bundle, batch) in enumerate(self.datamanager.fixed_indices_eval_dataloader):
                 # time this the following line
-                inner_start = time()
-                z = torch.normal(0.0, 1.0, size=(1, 1, self.cimle_ch), device=self.device)
+                z = torch.normal(0.0, 1.0, size=(num_samples, 1, self.cimle_ch), device=self.device)
                 height, width = camera_ray_bundle.shape
                 num_rays = height * width
-                camera_ray_bundle.metadata["cimle_latent"] = z.reshape(1, 1, -1).expand(height, width, -1)
-                outputs = self.model.get_outputs_for_camera_ray_bundle(camera_ray_bundle)
-                metrics_dict, _ = self.model.get_image_metrics_and_images(outputs, batch)
-                assert "num_rays_per_sec" not in metrics_dict
-                metrics_dict["num_rays_per_sec"] = num_rays / (time() - inner_start)
-                fps_str = "fps"
-                assert fps_str not in metrics_dict
-                metrics_dict[fps_str] = metrics_dict["num_rays_per_sec"] / (height * width)
-                metrics_dict_list.append(metrics_dict)
-                progress.advance(task)
+                for i in range(num_samples):
+                    camera_ray_bundle.metadata["cimle_latent"] = z[i:i+1].expand(height, width, -1)
+                    inner_start = time()
+                    outputs = self.model.get_outputs_for_camera_ray_bundle(camera_ray_bundle)
+                    metrics_dict, _ = self.model.get_image_metrics_and_images(outputs, batch)
+                    assert "num_rays_per_sec" not in metrics_dict
+                    metrics_dict["num_rays_per_sec"] = num_rays / (time() - inner_start)
+                    fps_str = "fps"
+                    assert fps_str not in metrics_dict
+                    metrics_dict[fps_str] = metrics_dict["num_rays_per_sec"] / num_rays
+                    metrics_dict_lists[i].append(metrics_dict)
+                    progress.update(task_inner, completed=i + 1)
+                
+                progress.reset(task_inner, description=f"[green]Evaluating latent sample for image {n + 1}...")
+                    
+                progress.update(task, completed=n + 1)
         # average the metrics list
-        metrics_dict = {}
-        for key in metrics_dict_list[0].keys():
-            metrics_dict[key] = float(
-                torch.mean(torch.tensor([metrics_dict[key] for metrics_dict in metrics_dict_list]))
-            )
+        metrics_dicts = []
+        for metrics_dict_list in metrics_dict_lists:
+            metrics_dict = {}
+            for key in metrics_dict_list[0].keys():
+                metrics_dict[key] = float(
+                    torch.mean(torch.tensor([metrics_dict[key] for metrics_dict in metrics_dict_list]))
+                )
+            metrics_dicts.append(metrics_dict)
+            
         self.train()
-        return metrics_dict
+        return metrics_dicts
     
     def get_training_callbacks(
         self, training_callback_attributes: TrainingCallbackAttributes

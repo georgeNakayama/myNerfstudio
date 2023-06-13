@@ -38,8 +38,8 @@ from nerfstudio.data.utils.dataloaders import (
 )
 from nerfstudio.cameras.cameras import CameraType
 from nerfstudio.data.datamanagers.base_datamanager import VanillaDataManager, VanillaDataManagerConfig, TDataset
-from myproject.cimle_dataset import cIMLEDataset
-from myproject.cimle_pixel_samplers import cIMLEPixelSampler
+from myproject.data.datasets.cimle_dataset import cIMLEDataset
+from myproject.data.cimle_pixel_samplers import cIMLEPixelSampler
 from nerfstudio.data.pixel_samplers import PixelSampler, PatchPixelSampler, EquirectangularPixelSampler
 from nerfstudio.utils.rich_utils import CONSOLE
 
@@ -79,20 +79,7 @@ class cIMLEDataManager(VanillaDataManager):
 
         super().__init__(config, device, test_mode, world_size, local_rank, **kwargs, _dataset_type=cIMLEDataset)
 
-    def setup_train(self):
-        super().setup_train()
-        # for loading full images
-        self.fixed_indices_train_dataloader = FixedIndicesEvalDataloader(
-            input_dataset=self.train_dataset,
-            device=self.device,
-            num_workers=self.world_size * 4,
-        )
-        self.train_dataloader = RandIndicesEvalDataloader(
-            input_dataset=self.train_dataset,
-            device=self.device,
-            num_workers=self.world_size * 4,
-        )
-        
+
     def next_train(self, step: int) -> Tuple[RayBundle, Dict]:
         """Returns the next batch of data from the train dataloader."""
         ray_bundle, batch = super().next_train(step)
@@ -122,9 +109,9 @@ class cIMLEDataManager(VanillaDataManager):
         return cIMLEPixelSampler(*args, **kwargs)
 
     def next_train_image(self, step: int) -> Tuple[int, RayBundle, Dict]:
-        for camera_ray_bundle, batch in self.train_dataloader:
-            assert camera_ray_bundle.camera_indices is not None
-            image_idx = int(camera_ray_bundle.camera_indices[0, 0, 0])
-            return image_idx, camera_ray_bundle, batch
-        raise ValueError("No more train images")
+        image_idx, camera_ray_bundle, batch = super().next_train_image(step)
+        height, width = camera_ray_bundle.shape
+        if "cimle_latent" in batch.keys():
+            camera_ray_bundle.metadata['cimle_latent'] = batch['cimle_latent'].clone().reshape(1, 1, -1).expand(height, width, -1)
+        return image_idx, camera_ray_bundle, batch
     

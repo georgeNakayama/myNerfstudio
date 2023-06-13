@@ -139,6 +139,32 @@ class ExponentialDecayScheduler(Scheduler):
 
         scheduler = lr_scheduler.LambdaLR(optimizer, lr_lambda=func)
         return scheduler
+    
+    
+
+@dataclass
+class VanillaNeRFDecaySchedulerConfig(SchedulerConfig):
+    """Config for VanillaNeRF decay scheduler with warmup"""
+
+    _target: Type = field(default_factory=lambda: VanillaNeRFDecayScheduler)
+    """target class to instantiate"""
+    max_steps: int = 100000
+    """The maximum number of steps."""
+    decay_rate: float = 0.1
+    """decay rate"""
+    lrate_decay: int = 250
+    """exponential learning rate decay (in 1000 steps)"""
+
+
+class VanillaNeRFDecayScheduler(Scheduler):
+    """VanillaNeRF decay scheduler. lr(step) = lr(0) * decay_rate **(step / decay_step * 1000).
+    """
+
+    config: VanillaNeRFDecaySchedulerConfig
+
+    def get_scheduler(self, optimizer: Optimizer, lr_init: float) -> LRScheduler:
+        decay_steps = self.config.lrate_decay * 1000
+        return lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda step: self.config.decay_rate ** (step / decay_steps))
 
 
 @dataclass

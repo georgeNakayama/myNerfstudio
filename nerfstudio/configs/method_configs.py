@@ -46,6 +46,7 @@ from nerfstudio.engine.schedulers import (
     CosineDecaySchedulerConfig,
     ExponentialDecaySchedulerConfig,
     MultiStepSchedulerConfig,
+    VanillaNeRFDecaySchedulerConfig
 )
 from nerfstudio.engine.trainer import TrainerConfig
 from nerfstudio.field_components.temporal_distortions import TemporalDistortionKind
@@ -63,7 +64,6 @@ from nerfstudio.models.vanilla_nerf import NeRFModel, VanillaModelConfig
 from nerfstudio.pipelines.base_pipeline import VanillaPipelineConfig
 from nerfstudio.pipelines.dynamic_batch import DynamicBatchPipelineConfig
 from nerfstudio.plugins.registry import discover_methods
-from myproject.sparse_scannet_dataparser import SparseScannetDataParserConfig
 
 method_configs: Dict[str, TrainerConfig] = {}
 descriptions = {
@@ -348,11 +348,11 @@ method_configs["vanilla-nerf"] = TrainerConfig(
     ),
     optimizers={
         "fields": {
-            "optimizer": RAdamOptimizerConfig(lr=5e-4, eps=1e-08),
-            "scheduler": None,
+            "optimizer": AdamOptimizerConfig(lr=5e-4),
+            "scheduler": VanillaNeRFDecaySchedulerConfig(),
         },
         "temporal_distortion": {
-            "optimizer": RAdamOptimizerConfig(lr=5e-4, eps=1e-08),
+            "optimizer": AdamOptimizerConfig(lr=5e-4, eps=1e-08),
             "scheduler": None,
         },
     },

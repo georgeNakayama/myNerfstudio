@@ -48,6 +48,10 @@ class SparseScannetDataParserConfig(DataParserConfig):
     """Directory specifying location of data."""
     test_json_name: str = "transforms_test.json"
     """Directory specifying location of data."""
+    center_method: Literal["poses", "focus", "none"] = "none"
+    """The method to use to center the poses."""
+    auto_scale_poses: bool = False
+    """Whether to automatically scale the poses to fit in +/- 1 bounding box."""
     scale_factor: float = 1.0
     """How much to scale the camera origins by."""
     scene_scale: float = 1.0

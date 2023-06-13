@@ -55,13 +55,19 @@ class TrainerConfig(ExperimentConfig):
 
     _target: Type = field(default_factory=lambda: Trainer)
     """target class to instantiate"""
+    mode: Literal["train", "test"] = "train"
+    """mode of trainer, choose from train or test"""
     steps_per_save: int = 1000
     """Number of steps between saves."""
     steps_per_eval_batch: int = 500
     """Number of steps between randomly sampled batches of rays."""
     steps_per_eval_image: int = 500
     """Number of steps between single eval images."""
+    steps_per_train_image: int = 100
+    """Number of steps between single eval images."""
     steps_per_eval_all_images: int = 25000
+    """Number of steps between eval all images."""
+    steps_per_test_all_images: int = 25000
     """Number of steps between eval all images."""
     max_num_iterations: int = 1000000
     """Maximum number of iterations to run."""
@@ -287,9 +293,28 @@ class Trainer:
                         name="GPU Memory (MB)", scalar=torch.cuda.max_memory_allocated() / (1024**2), step=step
                     )
 
+                if step_check(step, self.config.steps_per_train_image):
+                    with TimeWriter(writer, EventName.TRAIN_RAYS_PER_SEC, write=False) as test_t:
+                        metrics_dict, images_dict = self.pipeline.get_train_image_metrics_and_images(step=step)
+                    writer.put_time(
+                        name=EventName.TRAIN_RAYS_PER_SEC,
+                        duration=metrics_dict["num_rays"] / test_t.duration,
+                        step=step,
+                        avg_over_steps=True,
+                    )
+                    writer.put_dict(name="Train Images Metrics", scalar_dict=metrics_dict, step=step)
+                    writer.put_scalar(name=EventName.CURR_TRAIN_PSNR, scalar=metrics_dict["psnr"], step=step)
+                    group = "Train Images"
+                    for image_name, image in images_dict.items():
+                        writer.put_image(name=group + "/" + image_name, image=image, step=step)
+
                 # Do not perform evaluation if there are no validation images
                 if self.pipeline.datamanager.eval_dataset:
                     self.eval_iteration(step)
+                    
+                # Do not perform test evaluation if there are no validation images
+                if self.pipeline.datamanager.test_dataset:
+                    self.test_iteration(step)
 
                 if step_check(step, self.config.steps_per_save):
                     self.save_checkpoint(step)
@@ -318,6 +343,8 @@ class Trainer:
 
         if not self.config.viewer.quit_on_train_completion:
             self._train_complete_viewer()
+            
+        return step
 
     @check_main_thread
     def _check_viewer_warnings(self) -> None:
@@ -332,6 +359,24 @@ class Trainer:
                 "Use [yellow]--vis {wandb, tensorboard, viewer+wandb, viewer+tensorboard}[/yellow] to run with eval."
             )
             CONSOLE.print(f"{string}")
+
+    def test(self, step: int):
+        # Do not perform test evaluation if there are no validation images
+        if self.pipeline.datamanager.test_dataset:
+            metrics_dict, images_dict = self.pipeline.get_average_test_images_and_metrics(step=step)
+            
+            writer.put_time(
+                name=EventName.TEST_RAYS_PER_SEC,
+                duration=metrics_dict["num_rays_per_sec"],
+                step=step,
+                avg_over_steps=True,
+            )
+            writer.put_dict(name="Test Images Metrics Dict (all images)", scalar_dict=metrics_dict, step=step)
+            group = "Test Images"
+            
+            for image_name, image in images_dict.items():
+                writer.put_image(name=group + "/" + image_name, image=image, step=step)
+            writer.write_out_storage()
 
     @check_viewer_enabled
     def _init_viewer_state(self) -> None:
@@ -524,6 +569,7 @@ class Trainer:
                 avg_over_steps=True,
             )
             writer.put_dict(name="Eval Images Metrics", scalar_dict=metrics_dict, step=step)
+            writer.put_scalar(name=EventName.CURR_TEST_PSNR, scalar=metrics_dict["psnr"], step=step)
             group = "Eval Images"
             for image_name, image in images_dict.items():
                 writer.put_image(name=group + "/" + image_name, image=image, step=step)
@@ -532,3 +578,21 @@ class Trainer:
         if step_check(step, self.config.steps_per_eval_all_images):
             metrics_dict = self.pipeline.get_average_eval_image_metrics(step=step)
             writer.put_dict(name="Eval Images Metrics Dict (all images)", scalar_dict=metrics_dict, step=step)
+
+
+    @check_eval_enabled
+    @profiler.time_function
+    def test_iteration(self, step: int) -> None:
+        """Run one iteration with different batch/image/all image evaluations depending on step size.
+
+        Args:
+            step: Current training step.
+        """
+
+        # all test images
+        if step_check(step, self.config.steps_per_test_all_images):
+            metrics_dict, images_dict = self.pipeline.get_average_test_images_and_metrics(step=step)
+            writer.put_dict(name="Test Images Metrics Dict (all images)", scalar_dict=metrics_dict, step=step)
+            group = "Test Images"
+            for image_name, image in images_dict.items():
+                writer.put_image(name=group + "/" + image_name, image=image, step=step)

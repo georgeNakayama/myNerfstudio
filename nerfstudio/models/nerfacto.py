@@ -110,6 +110,8 @@ class NerfactoModelConfig(ModelConfig):
     """Whether to use proposal weight annealing."""
     use_average_appearance_embedding: bool = True
     """Whether to use average appearance embedding or zeros for inference."""
+    appearance_embedding_dim: int = 32
+    """appearance embedding dimension. 0 to turn it off"""
     proposal_weights_anneal_slope: float = 10.0
     """Slope of the annealing function for the proposal weights."""
     proposal_weights_anneal_max_num_iters: int = 1000
@@ -140,7 +142,6 @@ class NerfactoModel(Model):
     def populate_modules(self):
         """Set the fields and modules."""
         super().populate_modules()
-
         if self.config.disable_scene_contraction:
             scene_contraction = None
         else:
@@ -160,6 +161,7 @@ class NerfactoModel(Model):
             spatial_distortion=scene_contraction,
             num_images=self.num_train_data,
             use_pred_normals=self.config.predict_normals,
+            appearance_embedding_dim=self.config.appearance_embedding_dim,
             use_average_appearance_embedding=self.config.use_average_appearance_embedding,
             appearance_embedding_dim=self.config.appearance_embed_dim,
             implementation=self.config.implementation,

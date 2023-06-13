@@ -15,10 +15,11 @@
 """Classic NeRF field"""
 
 
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple, List
 
 import torch
 from torch import Tensor, nn
+from torch.nn import Parameter
 
 from nerfstudio.cameras.rays import RaySamples
 from nerfstudio.field_components.encodings import Encoding, Identity
@@ -80,12 +81,12 @@ class cIMLENeRFField(Field):
         )
 
         self.mlp_head = MLP(
-            in_dim=self.mlp_base.get_out_dim() + self.direction_encoding.get_out_dim() + cimle_ch * int(head_only),
+            in_dim=self.mlp_base.get_out_dim() + self.direction_encoding.get_out_dim(),
             num_layers=head_mlp_num_layers,
             layer_width=head_mlp_layer_width,
             out_activation=nn.ReLU(),
         )
-        self.ch_cam_linear = nn.Sequential(nn.Linear(cimle_ch, cimle_ch), nn.ReLU())
+        self.cimle_linear = nn.Sequential(nn.Linear(cimle_ch, self.mlp_head.get_out_dim()), nn.ReLU())
 
         self.field_output_density = DensityFieldHead(in_dim=self.mlp_base.get_out_dim())
         self.field_heads = nn.ModuleList(field_heads)
@@ -106,23 +107,34 @@ class cIMLENeRFField(Field):
         if not self.head_only:
             zs = ray_samples.metadata["cimle_latent"]
             assert zs.shape[-1] == self.cimle_ch
-            # print(encoded_xyz.shape, zs.shape)
             zs = zs.expand(list(encoded_xyz.shape[:-1]) + [self.cimle_ch])
             encoded_xyz = torch.cat([encoded_xyz, zs], dim=-1)
         base_mlp_out = self.mlp_base(encoded_xyz)
         density = self.field_output_density(base_mlp_out)
         return density, base_mlp_out
 
+    def get_param_group(self) -> Dict[str, List[Parameter]]:
+        param_groups = {'fields':[], 'cimle':[]}
+        for name, params in self.named_parameters():
+            if 'cimle' in name:
+                param_groups['cimle'].append(params)
+            else:
+                param_groups['cimle'].append(params)
+        return param_groups
+    
     def get_outputs(
         self, ray_samples: RaySamples, density_embedding: Optional[Tensor] = None
     ) -> Dict[FieldHeadNames, Tensor]:
         outputs = {}
-        if self.head_only:
-            zs = ray_samples.metadata["cimle_latent"]
-            assert zs.shape[-1] == self.cimle_ch
-            zs = zs.expand(list(density_embedding.shape[:-1]) + [self.cimle_ch])
-        for field_head in self.field_heads:
+        
+        for field_head in self.field_heads: 
             encoded_dir = self.direction_encoding(ray_samples.frustums.directions)
-            mlp_out = self.mlp_head(torch.cat([encoded_dir, density_embedding, zs] if self.head_only else [encoded_dir, density_embedding], dim=-1))  # type: ignore
+            mlp_out = self.mlp_head(torch.cat([encoded_dir, density_embedding], dim=-1))  # type: ignore
+            if self.head_only:
+                zs = ray_samples.metadata["cimle_latent"]
+                assert zs.shape[-1] == self.cimle_ch
+                zs = self.cimle_linear(zs)
+                zs = zs * 0
+                mlp_out = mlp_out + zs
             outputs[field_head.field_head_name] = field_head(mlp_out)
         return outputs

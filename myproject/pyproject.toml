@@ -10,7 +10,8 @@ dependencies = [
 include = ["myproject*"]
 
 [project.entry-points.'nerfstudio.method_configs']
-cimle_vanilla_nerf = 'myproject.cimle_config:cimle_config'
+cimle_vanilla_nerf = 'myproject.configs.cimle_config:cimle_vanilla_nerf'
+cimle_nerfacto = 'myproject.configs.cimle_config:cimle_nerfacto'
 
 [project.entry-points.'nerfstudio.dataparser_configs']
-sparse-scannet-dataparser = 'myproject.sparse_scannet_config:sparse_scannet'
+sparse-scannet-dataparser = 'myproject.configs.sparse_scannet_config:sparse_scannet'

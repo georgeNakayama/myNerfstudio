@@ -116,7 +116,6 @@ class Model(nn.Module):
             Mapping of different parameter groups
         """
 
-    @abstractmethod
     def get_outputs(self, ray_bundle: RayBundle) -> Dict[str, Union[torch.Tensor, List]]:
         """Takes in a Ray Bundle and returns a dictionary of outputs.
 
@@ -127,8 +126,9 @@ class Model(nn.Module):
         Returns:
             Outputs of model. (ie. rendered colors)
         """
+        return ray_bundle
 
-    def forward(self, ray_bundle: RayBundle) -> Dict[str, Union[torch.Tensor, List]]:
+    def forward(self, ray_bundle: RayBundle, **kwargs) -> Dict[str, Union[torch.Tensor, List]]:
         """Run forward starting with a ray bundle. This outputs different things depending on the configuration
         of the model and whether or not the batch is provided (whether or not we are training basically)
 
@@ -161,7 +161,7 @@ class Model(nn.Module):
             metrics_dict: dictionary of metrics, some of which we can use for loss
         """
     @torch.no_grad()
-    def get_outputs_for_ray_bundle_chunked(self, ray_bundle: RayBundle) -> Dict[str, torch.Tensor]:
+    def get_outputs_for_ray_bundle_chunked(self, ray_bundle: RayBundle, sample_latent: bool=False) -> Dict[str, torch.Tensor]:
         """Takes in camera parameters and computes the output of the model.
 
         Args:
@@ -176,7 +176,7 @@ class Model(nn.Module):
             end_idx = i + num_rays_per_chunk
             _ray_bundle = ray_bundle[start_idx:end_idx]
             # print(_ray_bundle.shape, start_idx, end_idx)
-            outputs = self.forward(ray_bundle=_ray_bundle)
+            outputs = self.forward(ray_bundle=_ray_bundle, sample_latent=sample_latent)
             for output_name, output in outputs.items():  # type: ignore
                 if not torch.is_tensor(output):
                     # TODO: handle lists of tensors as well

@@ -97,7 +97,11 @@ def train_loop(local_rank: int, world_size: int, config: TrainerConfig, global_r
     _set_random_seed(config.machine.seed + global_rank)
     trainer = config.setup(local_rank=local_rank, world_size=world_size)
     trainer.setup()
-    trainer.train()
+    if config.mode == "train":
+        total_step = trainer.train()
+    else:
+        total_step = trainer._start_step
+    trainer.test(total_step)
 
 
 def _distributed_worker(

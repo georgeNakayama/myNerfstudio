@@ -2,13 +2,13 @@
 #SBATCH --partition=orion --qos=normal
 # #SBATCH --time=96:00:00  --> this is a comment, you can choose to not specify a nodelist, it will randomly assign to a GPU
 #SBATCH --nodes=1
-#SBATCH --nodelist=oriong12
+#SBATCH --nodelist=orion-dgx
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=12G
 #SBATCH --account=orion
 
 # only use the following on partition with GPUs
-#SBATCH --gres=gpu:a5000:1
+#SBATCH --gres=gpu:v100:1
 #SBATCH --job-name=exp1
 #SBATCH --output=/orion/u/w4756677/slurm_dump/slurm-exp1-%j.out
 
@@ -31,6 +31,7 @@ echo NPROCS=$NPROCS
 #srun /usr/local/cuda/samples/1_Utilities/deviceQuery/deviceQuery
 source ~/.bashrc
 cd /orion/u/w4756677/nerf/nerfstudio/myproject
-conda activate nerfstudio
+conda activate nerfstudio_v100
+ns-train cimle-vanilla-nerf --pipeline.model.eval-num-rays-per-chunk=2048 --experiment_name exp1 --steps-per-eval-all-images 10000 sparse-scannet-dataparser --data data/scannet/0710 --train-json-name transforms_train.json
 
 echo "Done"
