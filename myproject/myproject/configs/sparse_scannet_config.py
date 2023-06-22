@@ -1,4 +1,0 @@
-from myproject.data.dataparsers.sparse_scannet_dataparser import SparseScannetDataParserConfig
-from nerfstudio.plugins.registry_dataparser import DataParserSpecification
-
-sparse_scannet = DataParserSpecification(config=SparseScannetDataParserConfig())

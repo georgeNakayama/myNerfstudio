@@ -40,6 +40,7 @@ from nerfstudio.field_components.mlp import MLP
 from nerfstudio.field_components.spatial_distortions import SpatialDistortion
 from nerfstudio.fields.base_field import Field, shift_directions_for_tcnn
 from nerfstudio.fields.nerfacto_field import NerfactoField
+from myproject.fields.cimle_field import cIMLEField
 
 
 class cIMLENerfactoField(NerfactoField):
@@ -74,7 +75,7 @@ class cIMLENerfactoField(NerfactoField):
         self,
         aabb: Tensor,
         num_images: int,
-        color_cimle: bool=True,
+        color_cimle: bool = True,
         cimle_ch: int=32,
         num_layers: int = 2,
         hidden_dim: int = 64,
@@ -95,6 +96,7 @@ class cIMLENerfactoField(NerfactoField):
         use_pred_normals: bool = False,
         use_average_appearance_embedding: bool = False,
         spatial_distortion: Optional[SpatialDistortion] = None,
+        cimle_type: Literal["add", "concat"] = "concat",
         implementation: Literal["tcnn", "torch"] = "tcnn",
     ) -> None:
         super().__init__(
@@ -121,12 +123,29 @@ class cIMLENerfactoField(NerfactoField):
             spatial_distortion=spatial_distortion,
             implementation=implementation
             )
-        self.cimle_ch = cimle_ch
+        
+        
+        base_res: int = 16
+        features_per_level: int = 2
+        encoder = HashEncoding(
+            num_levels=num_levels,
+            min_res=base_res,
+            max_res=max_res,
+            log2_hashmap_size=log2_hashmap_size,
+            features_per_level=features_per_level,
+            implementation=implementation,
+        )
+        
+        color_in_dim = self.direction_encoding.get_out_dim() + self.geo_feat_dim
         self.color_cimle=color_cimle
-        self.cimle_linear = nn.Sequential(nn.Linear(cimle_ch, cimle_ch), nn.ReLU())
+        self.cimle = cIMLEField(
+            cimle_ch, 
+            cimle_ch if cimle_type == "concat" else color_in_dim * int(color_cimle) + encoder.get_out_dim() * int(not color_cimle),
+            cimle_type)
+
         if color_cimle:
             self.mlp_head = MLP(
-                in_dim=self.direction_encoding.get_out_dim() + self.geo_feat_dim + cimle_ch,
+                in_dim=self.direction_encoding.get_out_dim() + self.geo_feat_dim + self.cimle.out_dim * int(cimle_type == "concat"),
                 num_layers=num_layers_color,
                 layer_width=hidden_dim_color,
                 out_dim=3,
@@ -135,18 +154,8 @@ class cIMLENerfactoField(NerfactoField):
                 implementation=implementation,
             )
         else:
-            base_res: int = 16
-            features_per_level: int = 2
-            encoder = HashEncoding(
-                num_levels=num_levels,
-                min_res=base_res,
-                max_res=max_res,
-                log2_hashmap_size=log2_hashmap_size,
-                features_per_level=features_per_level,
-                implementation=implementation,
-            )
             network = MLP(
-                in_dim=encoder.get_out_dim() + cimle_ch,
+                in_dim=encoder.get_out_dim() + self.cimle.out_dim * int(cimle_type == "concat"),
                 num_layers=num_layers,
                 layer_width=hidden_dim,
                 out_dim=1 + self.geo_feat_dim,
@@ -159,7 +168,7 @@ class cIMLENerfactoField(NerfactoField):
     def get_param_group(self) -> Dict[str, List[Parameter]]:
         param_groups = {'fields':[], 'cimle':[]}
         for name, params in self.named_parameters():
-            if 'cimle' in name:
+            if name.split(".")[0] == 'cimle':
                 param_groups['cimle'].append(params)
             else:
                 param_groups['fields'].append(params)
@@ -187,12 +196,9 @@ class cIMLENerfactoField(NerfactoField):
         positions_flat = positions.view(-1, 3)
         h_table_latents = self.mlp_base[0](positions_flat)
         
-        # cimle
-        zs = ray_samples.metadata["cimle_latent"]
-        assert zs.shape[-1] == self.cimle_ch
-        cimle_embedding = self.cimle_linear(zs)
-        # print(h_table_latents.shape, cimle_embedding.shape)
-        h_table_latents = torch.cat([h_table_latents, cimle_embedding.view(-1, self.cimle_ch)], dim=-1)
+        # color cimle
+        h_table_latents = self.cimle(ray_samples, h_table_latents)
+
         h = self.mlp_base[1](h_table_latents).view(*ray_samples.frustums.shape, -1)
         
         density_before_activation, base_mlp_out = torch.split(h, [1, self.geo_feat_dim], dim=-1)
@@ -223,10 +229,7 @@ class cIMLENerfactoField(NerfactoField):
 
         outputs_shape = ray_samples.frustums.directions.shape[:-1]
 
-        # cimle
-        zs = ray_samples.metadata["cimle_latent"]
-        assert zs.shape[-1] == self.cimle_ch
-        cimle_embedding = self.cimle_linear(zs)
+        
 
 
         # transients
@@ -262,15 +265,15 @@ class cIMLENerfactoField(NerfactoField):
 
             x = self.mlp_pred_normals(pred_normals_inp).view(*outputs_shape, -1).to(directions)
             outputs[FieldHeadNames.PRED_NORMALS] = self.field_head_pred_normals(x)
-
         h = torch.cat(
-            [
-                d,
-                density_embedding.view(-1, self.geo_feat_dim),
-                cimle_embedding.view(-1, self.cimle_ch),
-            ],
-            dim=-1,
-        )
+                [
+                    d,
+                    density_embedding.view(-1, self.geo_feat_dim),
+                ],
+                dim=-1,
+            )
+        h_table_latents = self.cimle(ray_samples, h)
+        
         rgb = self.mlp_head(h).view(*outputs_shape, -1).to(directions)
         outputs.update({FieldHeadNames.RGB: rgb})
 

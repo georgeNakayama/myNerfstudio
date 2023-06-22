@@ -14,4 +14,5 @@ cimle_vanilla_nerf = 'myproject.configs.cimle_config:cimle_vanilla_nerf'
 cimle_nerfacto = 'myproject.configs.cimle_config:cimle_nerfacto'
 
 [project.entry-points.'nerfstudio.dataparser_configs']
-sparse-scannet-dataparser = 'myproject.configs.sparse_scannet_config:sparse_scannet'
+sparse-scannet-dataparser = 'myproject.configs.data_config:sparse_scannet'
+llff = 'myproject.configs.data_config:llff'
