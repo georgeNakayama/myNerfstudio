@@ -21,7 +21,7 @@ from __future__ import annotations
 from abc import abstractmethod
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple, Type, Union, Callable
+from typing import Any, Dict, List, Optional, Tuple, Type, Union, Callable, Literal
 
 import torch
 from torch import nn
@@ -58,6 +58,8 @@ class cIMLEModelConfig(ModelConfig):
     """specifies the frenquency of cimle caching"""
     cimle_ch: int = 32
     """specifies the number of cimle channel dimension"""
+    cimle_type: Literal["concat", "add"] = "concat"
+    """specifies the method to integrate cimle latents"""
     cimle_num_rays_to_test: int = 200 * 200
     """speficies number of rays to test when caching cimle latents"""
     cimle_ensemble_num: int=5
@@ -75,7 +77,6 @@ class cIMLEModel(Model):
     """
 
     config: cIMLEModelConfig
-    cimle_latents: nn.Embedding
 
     def __init__(
         self,
@@ -90,6 +91,7 @@ class cIMLEModel(Model):
         self.cimle_cache_interval=self.config.cimle_cache_interval
         self.cimle_num_rays_to_test=self.config.cimle_num_rays_to_test
         self.cimle_ensemble_num=self.config.cimle_ensemble_num
+        self.cimle_type=self.config.cimle_type
         # self.cimle_latents =  torch.randn([self.num_train_data, self.cimle_ch])
 
 
@@ -213,10 +215,9 @@ class cIMLEModel(Model):
         
         return all_outputs
     
-    @classmethod
     def get_image_metrics_and_images_loop(
-        cls: cIMLEModel, 
-        eval_func: Callable[..., Tuple[Dict[str, float], Dict[str, Tensor]]], 
+        self, 
+        eval_func: Callable[..., Tuple[Dict[str, float], Dict[str, Tensor], Dict[str, Tensor]]], 
         all_outputs: List[Dict[str, Tensor]], 
         batch: Dict[str, Tensor]
     ) -> Tuple[Dict[str, float], Dict[str, Tensor]]:
@@ -224,25 +225,33 @@ class cIMLEModel(Model):
         all_images_dict = {}
         images_list_dict = defaultdict(list)
         metrics_list_dict = defaultdict(list)
-        num_samples = len(all_outputs)
         for n, outputs in enumerate(all_outputs):
-            metrics_dict, images_dict = eval_func(cls, outputs, batch)
+            metrics_dict, images_dict, ground_truth_dict = eval_func(outputs, batch)
             for k, v in metrics_dict.items():
                 metrics_list_dict[k].append(v)
                 all_metrics_dict[f"{k}/sample_{n}"] = v
             for k, v in images_dict.items():
-                all_images_dict[f"{k}/sample_{n}"] = v
                 images_list_dict[k].append(v)
 
-        avg_metrics_dict = {f"{k}/mean": torch.mean(torch.stack(v, dim=0)) for k, v in metrics_list_dict.items()}
-        var_metrics_dict = {f"{k}/variance": torch.var(torch.stack(v, dim=0)) for k, v in metrics_list_dict.items()}
+        avg_metrics_dict = {f"{k}": torch.mean(torch.tensor(v)) for k, v in metrics_list_dict.items()}
+        var_metrics_dict = {f"{k}/variance": torch.var(torch.tensor(v)) for k, v in metrics_list_dict.items()}
         all_metrics_dict.update(avg_metrics_dict)
         all_metrics_dict.update(var_metrics_dict)
         
+        concat_images_dict = {f"{k}/samples": torch.concat(v, dim=1) for k, v in images_list_dict.items()}
         avg_images_dict = {f"{k}/mean": torch.mean(torch.stack(v, dim=0), dim=0) for k, v in images_list_dict.items()}
-        var_images_dict = {f"{k}/variance": torch.var(torch.stack(v, dim=0), dim=0) for k, v in images_list_dict.items()}
+        var_images_dict: Dict[str, Tensor] = {}
+        for k, v in images_list_dict.items():
+            var_images_dict[f"{k}/variance"] = torch.var(torch.stack(v, dim=0), dim=0)
+            if len(var_images_dict[f"{k}/variance"].shape) == 3:
+                var_images_dict[f"{k}/variance"] = var_images_dict[f"{k}/variance"].mean(-1, keepdim=True)
+            all_metrics_dict[f"{k}/max_var"] = var_images_dict[f"{k}/variance"].max()
+            all_metrics_dict[f"{k}/mean_var"] = var_images_dict[f"{k}/variance"].mean()
+                
         all_images_dict.update(avg_images_dict)
         all_images_dict.update(var_images_dict)
+        all_images_dict.update(concat_images_dict)
+        all_images_dict.update({f"{k}/ground_truth": v for k, v in ground_truth_dict.items()})
                 
         return all_metrics_dict, all_images_dict
     

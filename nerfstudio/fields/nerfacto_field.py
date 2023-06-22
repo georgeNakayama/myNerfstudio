@@ -239,7 +239,7 @@ class NerfactoField(Field):
         outputs_shape = ray_samples.frustums.directions.shape[:-1]
 
         # appearance
-        if self.appearance_embedding_dim <= 0:
+        if self.appearance_embedding_dim > 0:
             if self.training:
                 embedded_appearance = self.embedding_appearance(camera_indices)
             else:
@@ -251,7 +251,6 @@ class NerfactoField(Field):
                     embedded_appearance = torch.zeros(
                         (*directions.shape[:-1], self.appearance_embedding_dim), device=directions.device
                     )
-        print(self.appearance_embedding_dim)
         # transients
         if self.use_transient_embedding and self.training:
             embedded_transient = self.embedding_transient(camera_indices)

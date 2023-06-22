@@ -120,6 +120,7 @@ class cIMLENerfactoModel(cIMLEModel, NerfactoModel):
             use_pred_normals=self.config.predict_normals,
             use_average_appearance_embedding=self.config.use_average_appearance_embedding,
             implementation=self.config.implementation,
+            cimle_type=self.config.cimle_type
         )
 
         self.density_fns = []
@@ -179,7 +180,53 @@ class cIMLENerfactoModel(cIMLEModel, NerfactoModel):
         return self.rgb_loss(image, outputs["rgb"])
     
     
+    
+    
     def get_image_metrics_and_images(
         self, all_outputs: List[Dict[str, torch.Tensor]], batch: Dict[str, torch.Tensor]
     ) -> Tuple[Dict[str, float], Dict[str, torch.Tensor]]:
-        return cIMLEModel.get_image_metrics_and_images_loop(self, NerfactoModel.get_image_metrics_and_images, all_outputs, batch)
+        
+        def _get_image_metrics_and_images(
+            outputs: Dict[str, torch.Tensor], _batch: Dict[str, torch.Tensor]
+        ) -> Tuple[Dict[str, float], Dict[str, torch.Tensor]]:
+            image = _batch["image"].to(self.device)
+            rgb = outputs["rgb"]
+            acc = outputs["accumulation"]
+            depth = outputs["depth"]
+
+
+            # Switch images from [H, W, C] to [1, C, H, W] for metrics computations
+            image = torch.moveaxis(image, -1, 0)[None, ...]
+            rgb = torch.moveaxis(rgb, -1, 0)[None, ...]
+
+            psnr = self.psnr(image, rgb)
+            ssim = self.ssim(image, rgb)
+            lpips = self.lpips(image, rgb)
+
+            # all of these metrics will be logged as scalars
+            metrics_dict = {"psnr": float(psnr.item()), "ssim": float(ssim), "lpips":float(lpips)}  # type: ignore
+
+            images_dict = {"img": rgb[0].moveaxis(0, -1), "accumulation": acc, "depth": depth}
+            images_dict.update({f"prop_depth_{i}": outputs[f"prop_depth_{i}"] for i in range(self.config.num_proposal_iterations)})
+
+            return metrics_dict, images_dict, {"img": image[0].moveaxis(0, -1)}
+        
+        all_metrics_dict, all_images_dict = self.get_image_metrics_and_images_loop(_get_image_metrics_and_images, all_outputs, batch)
+        
+        original_tags = ['img']
+        to_color_map_tags = ["accumulation", "depth"]
+        to_depth_color_map_tags = ["depth"] + [f"prop_depth_{i}" for i in range(self.config.num_proposal_iterations)]
+        clr_map_imgages_dict = {}
+        for tag in original_tags:
+            keys = [k for k in all_images_dict.keys() if tag in k]
+            clr_map_imgages_dict.update({key: all_images_dict[key] if "variance" not in key else colormaps.apply_colormap(all_images_dict[key]) for key in keys})
+        for tag in to_color_map_tags:
+            keys = [k for k in all_images_dict.keys() if tag in k]
+            clr_map_imgages_dict.update({key: colormaps.apply_colormap(all_images_dict[key]) for key in keys})
+        for tag in to_depth_color_map_tags:
+            keys = [k for k in all_images_dict.keys() if tag in k]
+            clr_map_imgages_dict.update({key: colormaps.apply_depth_colormap(
+                all_images_dict[key], 
+                accumulation=all_images_dict["accumulation/" + key.split("/")[-1]]
+            ) for key in keys})
+        return all_metrics_dict, clr_map_imgages_dict

@@ -277,10 +277,10 @@ class HashEncoding(Encoding):
         levels = torch.arange(num_levels)
         growth_factor = np.exp((np.log(max_res) - np.log(min_res)) / (num_levels - 1))
         self.scalings = torch.floor(min_res * growth_factor**levels)
-        print(self.scalings)
+        # print(self.scalings)
         self.hash_offset = levels * self.hash_table_size
         self.hash_table = torch.rand(size=(self.hash_table_size * num_levels, features_per_level)) * 2 - 1
-        CONSOLE.print(self.hash_table.shape)
+        # CONSOLE.print(self.hash_table.shape)
         self.hash_table *= hash_init_scale
         self.hash_table = nn.Parameter(self.hash_table)
 
