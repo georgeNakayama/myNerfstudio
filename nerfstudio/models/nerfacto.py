@@ -395,6 +395,8 @@ class NerfactoModel(Model):
         # all of these metrics will be logged as scalars
         metrics_dict = {"psnr": float(psnr.item()), "ssim": float(ssim)}  # type: ignore
         metrics_dict["lpips"] = float(lpips)
+        metrics_dict["max_depth"] = float(torch.max(outputs["depth"]))
+        metrics_dict["min_depth"] = float(torch.min(outputs["depth"]))
 
         images_dict = {"img": combined_rgb, "accumulation": combined_acc, "depth": combined_depth}
 
@@ -405,5 +407,7 @@ class NerfactoModel(Model):
                 accumulation=outputs["accumulation"],
             )
             images_dict[key] = prop_depth_i
+            metrics_dict[f"max_{key}"] = float(torch.max(outputs[key]))
+            metrics_dict[f"min_{key}"] = float(torch.min(outputs[key]))
 
         return metrics_dict, images_dict

@@ -34,18 +34,19 @@ from rich.progress import (
     TextColumn,
     TimeElapsedColumn,
 )
+from nerfstudio.utils import writer
 from torch import nn
 from torch.nn import Parameter
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.cuda.amp.grad_scaler import GradScaler
-
+import torchvision
 from nerfstudio.configs import base_config as cfg
 from nerfstudio.data.datamanagers.base_datamanager import (
     DataManager,
     DataManagerConfig,
     VanillaDataManager,
 )
-from nerfstudio.engine.callbacks import TrainingCallback, TrainingCallbackAttributes
+from nerfstudio.engine.callbacks import TrainingCallback, TrainingCallbackAttributes, TrainingCallbackLocation
 from nerfstudio.models.base_model import Model, ModelConfig
 from nerfstudio.utils import profiler
 
@@ -509,6 +510,20 @@ class VanillaPipeline(Pipeline):
         datamanager_callbacks = self.datamanager.get_training_callbacks(training_callback_attributes)
         model_callbacks = self.model.get_training_callbacks(training_callback_attributes)
         callbacks = datamanager_callbacks + model_callbacks
+        
+        def save_all_images(step):
+            all_train_views = [torch.moveaxis(batch['image'], -1, 0) for _, batch in self.datamanager.fixed_indices_train_dataloader]
+            all_val_views = [torch.moveaxis(batch['image'], -1, 0) for _, batch in self.datamanager.fixed_indices_eval_dataloader]
+            all_test_views = [torch.moveaxis(batch['image'], -1, 0) for _, batch in self.datamanager.fixed_indices_test_dataloader]
+            grid_train_im = torchvision.utils.make_grid(all_train_views, nrow=4).moveaxis(0, -1)
+            grid_val_im = torchvision.utils.make_grid(all_val_views, nrow=4).moveaxis(0, -1)
+            grid_test_im = torchvision.utils.make_grid(all_test_views, nrow=4).moveaxis(0, -1)
+            writer.put_image(name="all_train_views", image=grid_train_im, step=step)
+            writer.put_image(name="all_val_views", image=grid_val_im, step=step)
+            writer.put_image(name="all_test_views", image=grid_test_im, step=step)
+        
+        save_cb = TrainingCallback([TrainingCallbackLocation.BEFORE_TRAIN], save_all_images)
+        callbacks += [save_cb]
         return callbacks
 
     def get_param_groups(self) -> Dict[str, List[Parameter]]:
