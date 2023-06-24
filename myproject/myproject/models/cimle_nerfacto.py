@@ -108,6 +108,7 @@ class cIMLENerfactoModel(cIMLEModel, NerfactoModel):
             self.scene_box.aabb,
             color_cimle=self.config.color_cimle,
             cimle_ch=self.config.cimle_ch,
+            num_layers_cimle=self.config.num_layers_cimle,
             hidden_dim=self.config.hidden_dim,
             num_levels=self.config.num_levels,
             max_res=self.config.max_res,
@@ -205,16 +206,19 @@ class cIMLENerfactoModel(cIMLEModel, NerfactoModel):
 
             # all of these metrics will be logged as scalars
             metrics_dict = {"psnr": float(psnr.item()), "ssim": float(ssim), "lpips":float(lpips)}  # type: ignore
+            metrics_dict["max_depth"] = float(torch.max(depth))
+            metrics_dict["min_depth"] = float(torch.min(depth))
 
             images_dict = {"img": rgb[0].moveaxis(0, -1), "accumulation": acc, "depth": depth}
             images_dict.update({f"prop_depth_{i}": outputs[f"prop_depth_{i}"] for i in range(self.config.num_proposal_iterations)})
-
+            metrics_dict.update({f"max_prop_depth_{i}": float(torch.max(outputs[f"prop_depth_{i}"])) for i in range(self.config.num_proposal_iterations)})
+            metrics_dict.update({f"min_prop_depth_{i}": float(torch.min(outputs[f"prop_depth_{i}"])) for i in range(self.config.num_proposal_iterations)})
             return metrics_dict, images_dict, {"img": image[0].moveaxis(0, -1)}
         
         all_metrics_dict, all_images_dict = self.get_image_metrics_and_images_loop(_get_image_metrics_and_images, all_outputs, batch)
         
         original_tags = ['img']
-        to_color_map_tags = ["accumulation", "depth"]
+        to_color_map_tags = ["accumulation"]
         to_depth_color_map_tags = ["depth"] + [f"prop_depth_{i}" for i in range(self.config.num_proposal_iterations)]
         clr_map_imgages_dict = {}
         for tag in original_tags:

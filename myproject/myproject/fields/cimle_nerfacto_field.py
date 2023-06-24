@@ -75,8 +75,10 @@ class cIMLENerfactoField(NerfactoField):
         self,
         aabb: Tensor,
         num_images: int,
-        color_cimle: bool = True,
+        color_cimle: bool=True,
         cimle_ch: int=32,
+        num_layers_cimle: int=1,
+        cimle_activation: Literal["relu", "none"] = "relu",
         num_layers: int = 2,
         hidden_dim: int = 64,
         geo_feat_dim: int = 15,
@@ -140,8 +142,11 @@ class cIMLENerfactoField(NerfactoField):
         self.color_cimle=color_cimle
         self.cimle = cIMLEField(
             cimle_ch, 
+            num_layers_cimle,
             cimle_ch if cimle_type == "concat" else color_in_dim * int(color_cimle) + encoder.get_out_dim() * int(not color_cimle),
-            cimle_type)
+            cimle_type,
+            cimle_activation
+            )
 
         if color_cimle:
             self.mlp_head = MLP(
