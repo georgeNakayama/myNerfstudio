@@ -27,6 +27,7 @@ from threading import Lock
 from typing import Dict, List, Literal, Optional, Tuple, Type, cast
 
 import torch
+from torch.amp.autocast_mode import autocast
 from rich import box, style
 from rich.panel import Panel
 from rich.table import Table
@@ -230,7 +231,7 @@ class Trainer:
             }
         return Optimizers(optimizer_config, param_groups)
 
-    def train(self) -> None:
+    def train(self) -> int:
         """Train the model."""
         assert self.pipeline.datamanager.train_dataset is not None, "Missing DatsetInputs"
 

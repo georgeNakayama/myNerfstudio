@@ -41,7 +41,7 @@ from nerfstudio.data.scene_box import SceneBox
 from nerfstudio.engine.callbacks import TrainingCallback, TrainingCallbackAttributes, TrainingCallbackLocation
 from nerfstudio.model_components.scene_colliders import NearFarCollider
 from nerfstudio.pipelines.base_pipeline import Pipeline
-from nerfstudio.data.datamanagers.base_datamanager import DataManager
+from nerfstudio.data.datamanagers.base_datamanager import DataManager, VanillaDataManager
 from nerfstudio.utils import colormaps
 
 
@@ -96,8 +96,7 @@ class cIMLEModel(Model):
         self.cimle_num_rays_to_test=self.config.cimle_num_rays_to_test
         self.cimle_ensemble_num=self.config.cimle_ensemble_num
         self.cimle_type=self.config.cimle_type
-        # self.cimle_latents =  torch.randn([self.num_train_data, self.cimle_ch])
-
+        self.cimle_latents: nn.Embedding = nn.Embedding.from_pretrained(torch.zeros([num_train_data, self.cimle_ch]), freeze=True)
 
 
     def get_training_callbacks(
@@ -106,7 +105,7 @@ class cIMLEModel(Model):
         """Returns a list of callbacks that run functions at the specified training iterations."""
         callbacks = super().get_training_callbacks(training_callback_attributes)
         
-        def cache_latents(datamanager: DataManager, step):
+        def cache_latents(datamanager: VanillaDataManager, step):
             assert datamanager.fixed_indices_train_dataloader is not None, "must set up dataloader that loads training full images!"
             self.eval()
             num_images = len(datamanager.fixed_indices_train_dataloader)
@@ -144,22 +143,26 @@ class cIMLEModel(Model):
                     progress.update(task_id=task_outer, completed=n + 1)
                 # get the min latent
             ### Get the best loss and select and z code
-            idx_to_take = torch.argmin(all_losses, axis=0).reshape(1, -1, 1).expand(1, -1, self.cimle_ch) # [num_images]
+            idx_to_take = torch.argmin(all_losses, dim=0).reshape(1, -1, 1).expand(1, -1, self.cimle_ch) # [num_images]
             selected_z = torch.gather(all_z, 0, idx_to_take)[0] # [num_images, cimle_ch]
-            self.cimle_latents = nn.Embedding.from_pretrained(selected_z, freeze=True).to(self.device)
+            self.set_cimle_latents(nn.Embedding.from_pretrained(selected_z, freeze=True).to(self.device))
+            
             self.train()
             
+        assert training_callback_attributes.pipeline is not None
         cimle_caching_callback = TrainingCallback([TrainingCallbackLocation.BEFORE_TRAIN_ITERATION], cache_latents, update_every_num_iters=self.cimle_cache_interval, args=[training_callback_attributes.pipeline.datamanager])
         return callbacks + [cimle_caching_callback]
 
     @abstractmethod
-    def get_cimle_loss(self, outputs, batch, metrics_dict) -> torch.Tensor:
+    def get_cimle_loss(self, outputs, batch) -> torch.Tensor:
         """Obtain the cimle loss based on which caching is performed. 
             Inputs are the same as get loss dict. 
         Returns:
             cimle loss is returned
         """
 
+    def set_cimle_latents(self, latents: nn.Embedding) -> None:
+        self.cimle_latents = latents
 
     def forward(self, ray_bundle: RayBundle, sample_latent: bool=False, **kwargs) -> Dict[str, Union[torch.Tensor, List]]:
         """Run forward starting with a ray bundle. This outputs different things depending on the configuration
@@ -173,7 +176,8 @@ class cIMLEModel(Model):
             raise AttributeError("Camera indices are not provided.")
         camera_indices = ray_bundle.camera_indices.squeeze()
         if sample_latent:
-            samples = torch.randn([camera_indices.max() + 1, self.cimle_ch]).to(self.device)
+            max_cam_ind = int(camera_indices.max())
+            samples = torch.randn([max_cam_ind + 1, self.cimle_ch]).to(self.device)
             cimle_latents = samples[camera_indices.flatten()]
             ray_bundle.metadata["cimle_latent"] = cimle_latents
         elif "cimle_latent" not in ray_bundle.metadata:
@@ -186,7 +190,7 @@ class cIMLEModel(Model):
 
 
     @torch.no_grad()
-    def get_outputs_for_camera_ray_bundle(self, camera_ray_bundle: RayBundle) -> Dict[str, torch.Tensor]:
+    def get_outputs_for_camera_ray_bundle(self, camera_ray_bundle: RayBundle) -> List[Dict[str, torch.Tensor]]:
         """Takes in camera parameters and computes the output of the model.
 
         Args:
@@ -200,7 +204,7 @@ class cIMLEModel(Model):
             image_height, image_width = camera_ray_bundle.origins.shape[:2]
             num_rays = len(camera_ray_bundle)
             camera_ray_bundle.metadata["cimle_latent"] = _z.reshape(1, 1, self.cimle_ch).expand(image_height, image_width, -1)
-            outputs_dict = {}
+            outputs_dict: Dict[str, torch.Tensor] = {}
             outputs_lists = defaultdict(list)
             for i in range(0, num_rays, num_rays_per_chunk):
                 start_idx = i
@@ -229,6 +233,7 @@ class cIMLEModel(Model):
         all_images_dict = {}
         images_list_dict = defaultdict(list)
         metrics_list_dict = defaultdict(list)
+        ground_truth_dict: Dict[str, Tensor] = {}
         for n, outputs in enumerate(all_outputs):
             metrics_dict, images_dict, ground_truth_dict = eval_func(outputs, batch)
             for k, v in metrics_dict.items():
