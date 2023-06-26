@@ -187,18 +187,22 @@ class cIMLENerfactoModel(cIMLEModel, NerfactoModel):
         new_state_dict: Dict[str, Any] = {}
         model_state_dict: Dict[str, torch.Tensor] = self.state_dict()
         for k in state_dict.keys():
+            comp = k.split(".")[1]
+            if comp == "cimle":
+                CONSOLE.print(f"Skip loading parameter: {k}")
+                continue
             if k in model_state_dict.keys():
                 if state_dict[k].shape != model_state_dict[k].shape:
                     CONSOLE.print(f"Skip loading parameter: {k}, "
                                 f"required shape: {model_state_dict[k].shape}, "
                                 f"loaded shape: {state_dict[k].shape}")
+                    continue
                 new_state_dict[k] = state_dict[k]
             else:
                 CONSOLE.print(f"Dropping parameter {k}")
         for k in model_state_dict.keys():
             if k not in state_dict.keys():
                 CONSOLE.print(f"Layer {k} not loaded!")
-        CONSOLE.print(new_state_dict.keys())
         missing_keys, unexpected_keys = super().load_state_dict(new_state_dict, strict=False)
         for k in missing_keys:
             CONSOLE.print(f"parameter {k} is missing from pretrained model!")
