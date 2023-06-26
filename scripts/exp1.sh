@@ -1,37 +1,13 @@
 #!/bin/bash
-#SBATCH --partition=orion --qos=normal
-# #SBATCH --time=96:00:00  --> this is a comment, you can choose to not specify a nodelist, it will randomly assign to a GPU
-#SBATCH --nodes=1
-#SBATCH --nodelist=orion-dgx
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=12G
-#SBATCH --account=orion
 
-# only use the following on partition with GPUs
-#SBATCH --gres=gpu:v100:1
-#SBATCH --job-name=exp1
-#SBATCH --output=/orion/u/w4756677/slurm_dump/slurm-exp1-%j.out
-
-# only use the following if yo####SBATCH --mail-user=youremailaddress
-####SBATCH --mail-type=ALLu want email notification
-
-
-# list out some useful information (optional)
-echo "SLURM_JOBID="$SLURM_JOBID
-echo "SLURM_JOB_NODELIST"=$SLURM_JOB_NODELIST
-echo "SLURM_NNODES"=$SLURM_NNODES
-echo "SLURMTMPDIR="$SLURMTMPDIR
-echo "working directory = "$SLURM_SUBMIT_DIR
-
-# sample process (list hostnames of the nodes you've requested)
-NPROCS=`srun --nodes=${SLURM_NNODES} bash -c 'hostname' |wc -l`
-echo NPROCS=$NPROCS
-
-# can try the following to list out which GPU you have access to
-#srun /usr/local/cuda/samples/1_Utilities/deviceQuery/deviceQuery
-source ~/.bashrc
-cd /orion/u/w4756677/nerf/nerfstudio/myproject
-conda activate nerfstudio_v100
-ns-train cimle-vanilla-nerf --pipeline.model.eval-num-rays-per-chunk=2048 --experiment_name exp1 --steps-per-eval-all-images 10000 sparse-scannet-dataparser --data data/scannet/0710 --train-json-name transforms_train.json
+for i in 500 2500 5000
+do 
+    for lr in 0.01 0.1
+    do
+        ns-train cimle-nerfacto --pipeline.model.cimle-cache-interval $i --optimizers.cimle.optimizer.lr $lr --pipeline.model.pretrained_path pretrained/step-000012000.ckpt  --optimizers.valid-param-groups.valid-pgs cimle --experiment_name=fern_from_pretrained  llff --data data/llff/fern --train_ratio 0.2
+    done
+done 
 
 echo "Done"
+
+ns-train cimle-nerfacto --pipeline.model.pretrained_path pretrained/step-000012000.ckpt  --optimizers.valid-param-groups.valid-pgs="" --experiment_name=test_fern_from_pretrained  llff --data data/llff/fern --train_ratio 0.2

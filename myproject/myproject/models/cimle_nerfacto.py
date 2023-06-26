@@ -192,12 +192,13 @@ class cIMLENerfactoModel(cIMLEModel, NerfactoModel):
                     CONSOLE.print(f"Skip loading parameter: {k}, "
                                 f"required shape: {model_state_dict[k].shape}, "
                                 f"loaded shape: {state_dict[k].shape}")
-                new_state_dict[k] = model_state_dict[k]
+                new_state_dict[k] = state_dict[k]
             else:
                 CONSOLE.print(f"Dropping parameter {k}")
         for k in model_state_dict.keys():
             if k not in state_dict.keys():
                 CONSOLE.print(f"Layer {k} not loaded!")
+        CONSOLE.print(new_state_dict.keys())
         missing_keys, unexpected_keys = super().load_state_dict(new_state_dict, strict=False)
         for k in missing_keys:
             CONSOLE.print(f"parameter {k} is missing from pretrained model!")
