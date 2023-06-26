@@ -97,6 +97,7 @@ class cIMLENerfactoField(NerfactoField):
         use_average_appearance_embedding: bool = False,
         spatial_distortion: Optional[SpatialDistortion] = None,
         cimle_type: Literal["add", "concat"] = "concat",
+        cimle_pretrain: bool = False,
         implementation: Literal["tcnn", "torch"] = "tcnn",
     ) -> None:
         super().__init__(
@@ -141,7 +142,8 @@ class cIMLENerfactoField(NerfactoField):
         self.cimle = cIMLEField(
             cimle_ch, 
             cimle_ch if cimle_type == "concat" else color_in_dim * int(color_cimle) + encoder.get_out_dim() * int(not color_cimle),
-            cimle_type)
+            cimle_type,
+            cimle_pretrain=cimle_pretrain)
 
         if color_cimle:
             self.mlp_head = MLP(
@@ -172,6 +174,8 @@ class cIMLENerfactoField(NerfactoField):
                 param_groups['cimle'].append(params)
             else:
                 param_groups['fields'].append(params)
+        if self.cimle.is_pretraining:
+            del param_groups["cimle"]
         return param_groups
 
 
