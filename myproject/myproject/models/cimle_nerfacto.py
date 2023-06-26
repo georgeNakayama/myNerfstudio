@@ -19,55 +19,21 @@ NeRF implementation that combines many recent advancements.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Literal, Tuple, Type, Optional
-
+from typing import Any, Dict, List, Literal, Mapping, Tuple, Type, Optional
+from pathlib import Path
 import numpy as np
 import torch
-import torch.nn as nn 
-from rich.progress import (
-    BarColumn,
-    MofNCompleteColumn,
-    Progress,
-    TextColumn,
-    TimeElapsedColumn,
-)
-from collections import defaultdict
 from torch.nn import Parameter
-from torchmetrics import PeakSignalNoiseRatio
-from torchmetrics.functional import structural_similarity_index_measure
-from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
 
-from nerfstudio.cameras.rays import RayBundle, RaySamples
+from nerfstudio.cameras.rays import RayBundle
 from nerfstudio.engine.callbacks import (
     TrainingCallback,
     TrainingCallbackAttributes,
     TrainingCallbackLocation,
 )
-from nerfstudio.field_components.field_heads import FieldHeadNames
 from nerfstudio.field_components.spatial_distortions import SceneContraction
 from nerfstudio.fields.density_fields import HashMLPDensityField
-from nerfstudio.fields.nerfacto_field import NerfactoField
-from nerfstudio.model_components.losses import (
-    MSELoss,
-    distortion_loss,
-    interlevel_loss,
-    orientation_loss,
-    pred_normal_loss,
-    scale_gradients_by_distance_squared,
-)
-from nerfstudio.model_components.ray_samplers import (
-    ProposalNetworkSampler,
-    UniformSampler,
-)
-from nerfstudio.model_components.renderers import (
-    AccumulationRenderer,
-    DepthRenderer,
-    NormalsRenderer,
-    RGBRenderer,
-)
-from nerfstudio.model_components.scene_colliders import NearFarCollider
-from nerfstudio.model_components.shaders import NormalsShader
-from nerfstudio.models.base_model import Model, ModelConfig
+from nerfstudio.utils.rich_utils import CONSOLE
 from nerfstudio.models.nerfacto import NerfactoModel, NerfactoModelConfig
 from nerfstudio.utils import colormaps
 from myproject.models.base_cimle_model import cIMLEModel, cIMLEModelConfig
@@ -82,6 +48,10 @@ class cIMLENerfactoModelConfig(cIMLEModelConfig, NerfactoModelConfig):
     
     color_cimle: bool=True
     """whether apply cimle only to color channel"""
+    pretrained_path: Optional[Path]=None
+    """Specifies the path to pretrained model."""
+    cimle_pretrain: bool=False 
+    """Specifies whether it is pretraining"""
 
 
 class cIMLENerfactoModel(cIMLEModel, NerfactoModel):
@@ -121,7 +91,8 @@ class cIMLENerfactoModel(cIMLEModel, NerfactoModel):
             use_pred_normals=self.config.predict_normals,
             use_average_appearance_embedding=self.config.use_average_appearance_embedding,
             implementation=self.config.implementation,
-            cimle_type=self.config.cimle_type
+            cimle_type=self.config.cimle_type,
+            cimle_pretrain=self.config.cimle_pretrain
         )
 
         self.density_fns = []
@@ -153,7 +124,6 @@ class cIMLENerfactoModel(cIMLEModel, NerfactoModel):
 
         
     def get_outputs(self, ray_bundle: RayBundle):
-        ray_bundle = cIMLEModel.get_outputs(self, ray_bundle)
         return NerfactoModel.get_outputs(self, ray_bundle)
 
 
@@ -166,9 +136,42 @@ class cIMLENerfactoModel(cIMLEModel, NerfactoModel):
     def get_training_callbacks(
         self, training_callback_attributes: TrainingCallbackAttributes
     ) -> List[TrainingCallback]:
-        callbacks = cIMLEModel.get_training_callbacks(self, training_callback_attributes)
-        callbacks += NerfactoModel.get_training_callbacks(self, training_callback_attributes)
+        
 
+        def load_from_pretrain(step):
+            if self.config.pretrained_path is None:
+                CONSOLE.print("Pretrained model NOT loaded!~!")
+                return 
+            load_path = self.config.pretrained_path
+            if not load_path.is_file():
+                CONSOLE.print(f"Provided pretrained path {load_path} is invalid! Starting from scratch instead!~!")
+                return 
+            CONSOLE.print(f"Loading Nerfstudio pretrained model from {load_path}...")
+            state_dict: Dict[str, torch.Tensor] = torch.load(load_path, map_location="cpu")["pipeline"]
+            is_ddp_model_state = True
+            model_state = {}
+            for key, value in state_dict.items():
+                if key.startswith("_model."):
+                    # remove the "_model." prefix from key
+                    model_state[key[len("_model.") :]] = value
+                    # make sure that the "module." prefix comes from DDP,
+                    # rather than an attribute of the model named "module"
+                    if not key.startswith("_model.module."):
+                        is_ddp_model_state = False
+            # remove "module." prefix added by DDP
+            if is_ddp_model_state:
+                model_state = {key[len("module.") :]: value for key, value in model_state.items()}
+            
+            self.load_state_dict_from_pretrained(model_state)
+            CONSOLE.print(f"Finished loading Nerfstudio pretrained model from {load_path}...")
+        
+        load_cb = TrainingCallback([TrainingCallbackLocation.BEFORE_TRAIN], load_from_pretrain)
+        
+        callbacks = NerfactoModel.get_training_callbacks(self, training_callback_attributes)
+        if not self.config.cimle_pretrain:
+            callbacks += cIMLEModel.get_training_callbacks(self, training_callback_attributes)
+            callbacks += [load_cb]
+            
         return callbacks
     
     def get_cimle_loss(self, outputs, batch) -> torch.Tensor:
@@ -180,6 +183,27 @@ class cIMLENerfactoModel(cIMLEModel, NerfactoModel):
         image = batch["image"].to(self.device)
         return self.rgb_loss(image, outputs["rgb"])
     
+    def load_state_dict_from_pretrained(self, state_dict: Mapping[str, torch.Tensor]):
+        new_state_dict: Dict[str, Any] = {}
+        model_state_dict: Dict[str, torch.Tensor] = self.state_dict()
+        for k in state_dict.keys():
+            if k in model_state_dict.keys():
+                if state_dict[k].shape != model_state_dict[k].shape:
+                    CONSOLE.print(f"Skip loading parameter: {k}, "
+                                f"required shape: {model_state_dict[k].shape}, "
+                                f"loaded shape: {state_dict[k].shape}")
+                new_state_dict[k] = model_state_dict[k]
+            else:
+                CONSOLE.print(f"Dropping parameter {k}")
+        for k in model_state_dict.keys():
+            if k not in state_dict.keys():
+                CONSOLE.print(f"Layer {k} not loaded!")
+        missing_keys, unexpected_keys = super().load_state_dict(new_state_dict, strict=False)
+        for k in missing_keys:
+            CONSOLE.print(f"parameter {k} is missing from pretrained model!")
+        for k in unexpected_keys:
+            CONSOLE.print(f"parameter {k} is unexpected from pretrained model!")
+    
     
     
     
@@ -189,7 +213,7 @@ class cIMLENerfactoModel(cIMLEModel, NerfactoModel):
         
         def _get_image_metrics_and_images(
             outputs: Dict[str, torch.Tensor], _batch: Dict[str, torch.Tensor]
-        ) -> Tuple[Dict[str, float], Dict[str, torch.Tensor]]:
+        ) -> Tuple[Dict[str, float], Dict[str, torch.Tensor], Dict[str, torch.Tensor]]:
             image = _batch["image"].to(self.device)
             rgb = outputs["rgb"]
             acc = outputs["accumulation"]

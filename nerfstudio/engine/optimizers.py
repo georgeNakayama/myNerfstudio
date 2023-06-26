@@ -26,6 +26,7 @@ from torch.nn.parameter import Parameter
 
 from nerfstudio.configs import base_config
 from nerfstudio.utils import writer
+from nerfstudio.utils.rich_utils import CONSOLE
 
 
 # Optimizer related configs
@@ -51,6 +52,11 @@ class OptimizerConfig(base_config.PrintableConfig):
         kwargs.pop("max_norm")
         return self._target(params, **kwargs)
 
+# valid param group config
+@dataclass
+class ValidParamGroupsConfig(base_config.PrintableConfig):
+    """Basic optimizer config to specify the valid parameter groups separated by commas"""
+    valid_pgs: List[str]
 
 @dataclass
 class AdamOptimizerConfig(OptimizerConfig):
@@ -83,7 +89,12 @@ class Optimizers:
         self.optimizers = {}
         self.schedulers = {}
         self.parameters = {}
+        assert isinstance(self.config["valid_param_groups"], ValidParamGroupsConfig)
+        valid_pgs = self.config["valid_param_groups"].valid_pgs
         for param_group_name, params in param_groups.items():
+            if param_group_name not in valid_pgs:
+                CONSOLE.print(f"param group [red]{param_group_name}[/red] is not specified in [green]valid_param_group[/green], parameters in this group will NOT be updated during optimization!")
+                continue
             lr_init = config[param_group_name]["optimizer"].lr
             self.optimizers[param_group_name] = config[param_group_name]["optimizer"].setup(params=params)
             self.parameters[param_group_name] = params
@@ -126,7 +137,7 @@ class Optimizers:
             max_norm = self.config[param_group]["optimizer"].max_norm
             if max_norm is not None:
                 grad_scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(self.parameters[param_group], max_norm)
+                torch.nn.utils.clip_grad.clip_grad_norm_(self.parameters[param_group], max_norm)
             if any(any(p.grad is not None for p in g["params"]) for g in optimizer.param_groups):
                 grad_scaler.step(optimizer)
 
@@ -136,7 +147,7 @@ class Optimizers:
             # note that they key is the parameter name
             max_norm = self.config[param_group]["optimizer"].max_norm
             if max_norm is not None:
-                torch.nn.utils.clip_grad_norm_(self.parameters[param_group], max_norm)
+                torch.nn.utils.clip_grad.clip_grad_norm_(self.parameters[param_group], max_norm)
             optimizer.step()
 
     def scheduler_step_all(self, step: int) -> None:

@@ -27,6 +27,7 @@ from threading import Lock
 from typing import Dict, List, Literal, Optional, Tuple, Type, cast
 
 import torch
+from torch.amp.autocast_mode import autocast
 from rich import box, style
 from rich.panel import Panel
 from rich.table import Table
@@ -226,7 +227,7 @@ class Trainer:
             }
         return Optimizers(optimizer_config, param_groups)
 
-    def train(self) -> None:
+    def train(self) -> int:
         """Train the model."""
         assert self.pipeline.datamanager.train_dataset is not None, "Missing DatsetInputs"
 
@@ -505,7 +506,7 @@ class Trainer:
 
         device_type: str = self.device.split(":")[0] if "cuda" in self.device else "cpu"
 
-        with torch.autocast(device_type=device_type, enabled=self.mixed_precision):
+        with autocast(device_type=device_type, enabled=self.mixed_precision):
             _, loss_dict, metrics_dict = self.pipeline.get_train_loss_dict(step=step)
             loss = functools.reduce(torch.add, loss_dict.values())
         self.grad_scaler.scale(loss).backward()  # type: ignore

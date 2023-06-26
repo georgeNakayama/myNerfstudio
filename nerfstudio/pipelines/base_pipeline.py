@@ -379,6 +379,7 @@ class VanillaPipeline(Pipeline):
         self.eval()
         metrics_dict_list = []
         total_image_dict = {}
+        assert self.datamanager.fixed_indices_test_dataloader is not None
         num_images = len(self.datamanager.fixed_indices_test_dataloader)
         with Progress(
             TextColumn("[progress.description]{task.description}"),
@@ -422,6 +423,7 @@ class VanillaPipeline(Pipeline):
         """
         self.eval()
         metrics_dict_list = []
+        assert self.datamanager.fixed_indices_eval_dataloader is not None
         num_images = len(self.datamanager.fixed_indices_eval_dataloader)
         with Progress(
             TextColumn("[progress.description]{task.description}"),
@@ -476,6 +478,9 @@ class VanillaPipeline(Pipeline):
         callbacks = datamanager_callbacks + model_callbacks
         
         def save_all_images(step):
+            assert self.datamanager.fixed_indices_train_dataloader is not None 
+            assert self.datamanager.fixed_indices_eval_dataloader is not None 
+            assert self.datamanager.fixed_indices_test_dataloader is not None 
             all_train_views = [torch.moveaxis(batch['image'], -1, 0) for _, batch in self.datamanager.fixed_indices_train_dataloader]
             all_val_views = [torch.moveaxis(batch['image'], -1, 0) for _, batch in self.datamanager.fixed_indices_eval_dataloader]
             all_test_views = [torch.moveaxis(batch['image'], -1, 0) for _, batch in self.datamanager.fixed_indices_test_dataloader]

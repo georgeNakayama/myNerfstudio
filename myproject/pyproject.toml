@@ -12,6 +12,7 @@ include = ["myproject*"]
 [project.entry-points.'nerfstudio.method_configs']
 cimle_vanilla_nerf = 'myproject.configs.cimle_config:cimle_vanilla_nerf'
 cimle_nerfacto = 'myproject.configs.cimle_config:cimle_nerfacto'
+cimle_nerfacto_pretrain = 'myproject.configs.cimle_config:cimle_nerfacto_pretrain'
 
 [project.entry-points.'nerfstudio.dataparser_configs']
 sparse-scannet-dataparser = 'myproject.configs.data_config:sparse_scannet'

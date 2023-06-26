@@ -113,7 +113,7 @@ class Model(nn.Module):
         Returns:
             Mapping of different parameter groups
         """
-
+    @abstractmethod
     def get_outputs(self, ray_bundle: RayBundle) -> Dict[str, Union[torch.Tensor, List]]:
         """Takes in a Ray Bundle and returns a dictionary of outputs.
 
@@ -124,7 +124,6 @@ class Model(nn.Module):
         Returns:
             Outputs of model. (ie. rendered colors)
         """
-        return ray_bundle
 
     def forward(self, ray_bundle: RayBundle, **kwargs) -> Dict[str, Union[torch.Tensor, List]]:
         """Run forward starting with a ray bundle. This outputs different things depending on the configuration
