@@ -130,7 +130,7 @@ cimle_nerfacto = MethodSpecification(
             "optimizer": AdamOptimizerConfig(lr=5e-5, eps=1e-15),
             "scheduler": ExponentialDecaySchedulerConfig(lr_final=5e-5, max_steps=200000),
         },
-        "valid_param_groups": ValidParamGroupsConfig(valid_pgs=["proposal_networks","fields","cimle"])
+        "valid_param_groups": ValidParamGroupsConfig(valid_pgs=["proposal_networks","fields", "camera_opt", "cimle"])
     },
     viewer=ViewerConfig(num_rays_per_chunk=1 << 15),
     vis="wandb",
@@ -178,6 +178,11 @@ cimle_nerfacto_pretrain = MethodSpecification(
             "optimizer": AdamOptimizerConfig(lr=1e-2, eps=1e-15),
             "scheduler": ExponentialDecaySchedulerConfig(lr_final=0.0001, max_steps=200000),
         },
+        "cimle": {
+            "optimizer": AdamOptimizerConfig(lr=5e-5, eps=1e-15),
+            "scheduler": ExponentialDecaySchedulerConfig(lr_final=5e-5, max_steps=200000),
+        },
+        "valid_param_groups": ValidParamGroupsConfig(valid_pgs=["proposal_networks", "fields", "camera_opt"])
     },
     viewer=ViewerConfig(num_rays_per_chunk=1 << 15),
     vis="wandb",
