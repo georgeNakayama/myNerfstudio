@@ -187,8 +187,7 @@ class cIMLENerfactoModel(cIMLEModel, NerfactoModel):
         new_state_dict: Dict[str, Any] = {}
         model_state_dict: Dict[str, torch.Tensor] = self.state_dict()
         for k in state_dict.keys():
-            comp = k.split(".")[1]
-            if comp == "cimle":
+            if "cimle" in k:
                 CONSOLE.print(f"Skip loading parameter: {k}")
                 continue
             if k in model_state_dict.keys():
