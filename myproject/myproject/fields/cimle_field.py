@@ -16,18 +16,14 @@
 Base class for the graphs.
 """
 
-from abc import abstractmethod
-from dataclasses import dataclass, field
-from typing import Dict, Optional, Tuple, Type, Literal
+from typing import Literal
 
 
 import torch
-from jaxtyping import Float, Shaped
 from torch import Tensor, nn
 
-from nerfstudio.cameras.rays import Frustums, RaySamples
-from nerfstudio.configs.base_config import InstantiateConfig
-from nerfstudio.field_components.field_heads import FieldHeadNames
+from nerfstudio.cameras.rays import  RaySamples
+from nerfstudio.field_components.mlp import MLP
 
 
 class cIMLEField(nn.Module):
@@ -36,16 +32,19 @@ class cIMLEField(nn.Module):
     def __init__(
         self, 
         in_cimle_ch: int, 
+        num_layers: int,
         out_cimle_ch: int, 
         cimle_type: Literal["concat", "add"] = "concat",
-        cimle_pretrain: bool = False
+        cimle_pretrain: bool = False,
+        cimle_act: Literal["relu", "none"] = "relu"
         ) -> None:
         super().__init__()
         self.cimle_type=cimle_type
         self.in_cimle_ch = in_cimle_ch
         self.out_cimle_ch = out_cimle_ch
-        self.cimle_pretrain=cimle_pretrain
-        self.cimle_linear = nn.Sequential(nn.Linear(self.in_cimle_ch, self.out_cimle_ch), nn.ReLU())
+        cimle_activation = nn.ReLU() if cimle_act == "relu" else nn.Identity()
+        self.cimle_pretrain = cimle_pretrain
+        self.cimle_linear = MLP(in_dim=in_cimle_ch, num_layers=num_layers, layer_width=in_cimle_ch, out_dim=out_cimle_ch, activation=cimle_activation, out_activation=None)
         
     @property
     def in_dim(self):

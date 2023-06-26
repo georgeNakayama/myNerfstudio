@@ -233,7 +233,11 @@ class Trainer:
         self.pipeline.datamanager.train_dataparser_outputs.save_dataparser_transform(
             self.base_dir / "dataparser_transforms.json"
         )
-
+        
+        # before train start callbacks
+        for callback in self.callbacks:
+            callback.run_callback_at_location(step=self._start_step, location=TrainingCallbackLocation.BEFORE_TRAIN)
+            
         self._init_viewer_state()
         with TimeWriter(writer, EventName.TOTAL_TRAIN_TIME):
             num_iterations = self.config.max_num_iterations

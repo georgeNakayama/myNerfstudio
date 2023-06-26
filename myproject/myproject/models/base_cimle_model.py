@@ -58,6 +58,10 @@ class cIMLEModelConfig(ModelConfig):
     """specifies the frenquency of cimle caching"""
     cimle_ch: int = 32
     """specifies the number of cimle channel dimension"""
+    num_layers_cimle: int = 1
+    """specifies the number of layers in cimle linear"""
+    cimle_activation: Literal["relu", "none"] = "relu"
+    """specifies the activation used in cimle linear layers"""
     cimle_type: Literal["concat", "add"] = "concat"
     """specifies the method to integrate cimle latents"""
     cimle_num_rays_to_test: int = 200 * 200

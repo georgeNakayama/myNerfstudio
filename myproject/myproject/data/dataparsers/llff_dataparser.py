@@ -112,6 +112,8 @@ class LLFFDataParserConfig(DataParserConfig):
     """Directory specifying location of data."""
     factor: int = 8
     """specify the factor to downsample images by"""
+    mask_ratio: Literal[-1, 2, 3, 4, 5, 6, 7, 8, 9, 10] = -1
+    """specify the mask ratio to use for optimization"""
     spherify: bool =False
     """Whether to spherify the poses"""
     center_method: Literal["poses", "focus", "none"] = "poses"
@@ -145,6 +147,7 @@ class LLFF(DataParser):
         self.scene_scale: float = config.scene_scale
         self.select_seed: int = config.select_seed
         self.train_ratio: float = config.train_ratio
+        self.mask_ratio: int = config.mask_ratio
         self.sfx = ''
         if self.factor is not None:
             self.sfx = '_{}'.format(self.factor)
@@ -164,10 +167,20 @@ class LLFF(DataParser):
         
         imgdir = self.data  / Path('images' + self.sfx)
         if not os.path.exists(imgdir):
-            print( imgdir, 'does not exist, returning' )
+            CONSOLE.print( imgdir, 'does not exist, returning' )
             return
         
         imgfiles = [imgdir / Path(f) for f in sorted(os.listdir(imgdir)) if f.endswith('JPG') or f.endswith('jpg') or f.endswith('png')]
+        
+        # get mask file based on mask_ratio
+        maskfiles = None
+        if self.mask_ratio > 0:
+            maskfile = self.data  / Path('mask' + self.sfx) / Path(f"mask_lower_{self.mask_ratio}.png")
+            if not maskfile.is_file():
+                CONSOLE.print( maskfile, 'does not exist, returning' )
+                return
+            maskfiles = [maskfile for _ in range(len(imgfiles))]
+            
         if poses.shape[-1] != len(imgfiles):
             print( 'Mismatch between imgs {} and poses {} !!!!'.format(len(imgfiles), poses.shape[-1]) )
             return
@@ -176,10 +189,11 @@ class LLFF(DataParser):
         poses[:2, 4, :] = np.array(sh[:2]).reshape([2, 1])
         poses[2, 4, :] = poses[2, 4, :] * 1./ self.factor
         
-        return poses[:, :-1], poses[:, -1, 0].tolist(), bds, imgfiles
+        return poses[:, :-1], poses[:, -1, 0].tolist(), bds, imgfiles, maskfiles
 
     def _generate_dataparser_outputs(self, split="train"):
-        poses, hwf, bds, imgfiles = self._load_data()
+        poses, hwf, bds, imgfiles, maskfiles = self._load_data()
+            
         CONSOLE.print(f'Loaded {self.data} bd max: {bds.max()} bd min: {bds.min()}')
         # Correct rotation matrix ordering and move variable dim to axis 0
         poses = np.concatenate([poses[:, 1:2, :], -poses[:, 0:1, :], poses[:, 2:, :]], 1)
@@ -205,7 +219,13 @@ class LLFF(DataParser):
         num_train = int(len(imgfiles) * self.train_ratio)
         i_perm = np.random.RandomState(self.select_seed).permutation(len(imgfiles))
         ids = i_perm[:num_train] if split == "train" else i_perm[num_train:]
-
+        
+        if maskfiles is not None and split == "train":
+            maskfiles = [maskfiles[i] for i in ids]
+        else:
+            maskfiles = None
+        print(maskfiles)
+            
         H, W, focal = hwf
         cameras = Cameras(
             camera_to_worlds=poses[ids, :3, :4],
@@ -220,6 +240,7 @@ class LLFF(DataParser):
 
         dataparser_outputs = DataparserOutputs(
             image_filenames=[imgfiles[i] for i in ids],
+            mask_filenames=maskfiles,
             cameras=cameras,
             dataparser_transform=transform_matrix,
             scene_box=scene_box,
