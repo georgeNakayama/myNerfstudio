@@ -89,9 +89,11 @@ CIMLE_CH=32
 cimle_nerfacto = MethodSpecification(
     TrainerConfig(
     method_name="cimle-nerfacto",
-    steps_per_eval_batch=500,
+    steps_per_eval_batch=5000,
+    steps_per_eval_image=5000,
+    steps_per_train_image=1000,
+    steps_per_test_all_images=10000,
     steps_per_save=2000,
-    steps_per_eval_all_images=1000,
     max_num_iterations=30000,
     mixed_precision=True,
     pipeline=VanillaPipelineConfig(
@@ -141,8 +143,10 @@ cimle_nerfacto = MethodSpecification(
 cimle_nerfacto_pretrain = MethodSpecification(
     TrainerConfig(
     method_name="cimle-nerfacto-pretrain",
-    steps_per_eval_batch=500,
-    steps_per_eval_all_images=1000,
+    steps_per_eval_batch=5000,
+    steps_per_eval_image=5000,
+    steps_per_train_image=1000,
+    steps_per_test_all_images=10000,
     steps_per_save=2000,
     max_num_iterations=30000,
     mixed_precision=True,
