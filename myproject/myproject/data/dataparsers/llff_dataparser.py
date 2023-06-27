@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Type, Tuple, List
+from typing import Type, Tuple, List, Optional
 
 try:
     from typing import Literal
@@ -154,7 +154,7 @@ class LLFF(DataParser):
             _minify(self.data, factors=[self.factor])
         
            
-    def _load_data(self) -> Tuple[Tensor, Tensor, Path, int, int]:
+    def _load_data(self) -> Tuple[np.ndarray, List[float], np.ndarray, List[Path], Optional[List[Path]]]:
         
         poses_arr = np.load(self.data / "poses_bounds.npy")
         poses = poses_arr[:, :-2].reshape([-1, 3, 5]).transpose([1,2,0])
@@ -167,27 +167,36 @@ class LLFF(DataParser):
         
         imgdir = self.data  / Path('images' + self.sfx)
         if not os.path.exists(imgdir):
-            CONSOLE.print( imgdir, 'does not exist, returning' )
-            return
+            CONSOLE.print( imgdir, 'does not exist, existing' )
+            assert False
         
         imgfiles = [imgdir / Path(f) for f in sorted(os.listdir(imgdir)) if f.endswith('JPG') or f.endswith('jpg') or f.endswith('png')]
+        
+        
+            
+        if poses.shape[-1] != len(imgfiles):
+            print( 'Mismatch between imgs {} and poses {} !!!!'.format(len(imgfiles), poses.shape[-1]) )
+            assert False
+        
+        sh = imageio.imread(imgfiles[0]).shape
+        poses[:2, 4, :] = np.array(sh[:2]).reshape([2, 1])
+        poses[2, 4, :] = poses[2, 4, :] * 1./ self.factor
         
         # get mask file based on mask_ratio
         maskfiles = None
         if self.mask_ratio > 0:
             maskfile = self.data  / Path('mask' + self.sfx) / Path(f"mask_lower_{self.mask_ratio}.png")
             if not maskfile.is_file():
-                CONSOLE.print( maskfile, 'does not exist, returning' )
-                return
+                mask_save_path = self.data  / Path('mask' + self.sfx)
+                CONSOLE.print(f' [red]{maskfile}[/red] does not exist, creating mask_lower_{self.mask_ratio}.png in {mask_save_path}...')
+                h, w = sh[:2] 
+                mask_im = np.ones([h, w])
+                lower_mask_bd = int(h * (self.mask_ratio - 1) / self.mask_ratio)
+                mask_im[lower_mask_bd:] = 0.
+                if not mask_save_path.is_dir():
+                    os.makedirs(mask_save_path, exist_ok=False)
+                imageio.imsave(maskfile, (mask_im * 255).astype(np.uint8))
             maskfiles = [maskfile for _ in range(len(imgfiles))]
-            
-        if poses.shape[-1] != len(imgfiles):
-            print( 'Mismatch between imgs {} and poses {} !!!!'.format(len(imgfiles), poses.shape[-1]) )
-            return
-        
-        sh = imageio.imread(imgfiles[0]).shape
-        poses[:2, 4, :] = np.array(sh[:2]).reshape([2, 1])
-        poses[2, 4, :] = poses[2, 4, :] * 1./ self.factor
         
         return poses[:, :-1], poses[:, -1, 0].tolist(), bds, imgfiles, maskfiles
 

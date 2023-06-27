@@ -28,7 +28,7 @@ import torch
 import wandb
 from jaxtyping import Float
 from torch import Tensor
-from torch.utils.tensorboard import SummaryWriter
+from torch.utils.tensorboard.writer import SummaryWriter
 
 from nerfstudio.configs import base_config as cfg
 from nerfstudio.utils.decorators import check_main_thread, decorate_all
@@ -65,6 +65,7 @@ class EventType(enum.Enum):
 
     IMAGE = "write_image"
     SCALAR = "write_scalar"
+    TABLE = "write_table"
     DICT = "write_scalar_dict"
     CONFIG = "write_config"
 
