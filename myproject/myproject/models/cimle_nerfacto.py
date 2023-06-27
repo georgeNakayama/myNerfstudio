@@ -251,14 +251,14 @@ class cIMLENerfactoModel(cIMLEModel, NerfactoModel):
         clr_map_imgages_dict = {}
         for tag in original_tags:
             keys = [k for k in all_images_dict.keys() if tag in k]
-            clr_map_imgages_dict.update({key: all_images_dict[key] if "variance" not in key else colormaps.apply_colormap(all_images_dict[key]) for key in keys})
+            clr_map_imgages_dict.update({key: all_images_dict[key] if "variance" not in key else colormaps.apply_colormap(all_images_dict[key], colormap_options=colormaps.ColormapOptions(normalize=True)) for key in keys})
         for tag in to_color_map_tags:
             keys = [k for k in all_images_dict.keys() if tag in k]
-            clr_map_imgages_dict.update({key: colormaps.apply_colormap(all_images_dict[key]) for key in keys})
+            clr_map_imgages_dict.update({key: colormaps.apply_colormap(all_images_dict[key]) if "variance" not in key else colormaps.apply_colormap(all_images_dict[key], colormap_options=colormaps.ColormapOptions(normalize=True)) for key in keys})
         for tag in to_depth_color_map_tags:
             keys = [k for k in all_images_dict.keys() if tag in k]
             clr_map_imgages_dict.update({key: colormaps.apply_depth_colormap(
                 all_images_dict[key], 
                 accumulation=all_images_dict["accumulation/" + key.split("/")[-1]]
-            ) if "variance" not in key else colormaps.apply_colormap(all_images_dict[key]) for key in keys})
+            ) if "variance" not in key else colormaps.apply_colormap(all_images_dict[key], colormap_options=colormaps.ColormapOptions(normalize=True)) for key in keys})
         return all_metrics_dict, clr_map_imgages_dict
