@@ -260,5 +260,5 @@ class cIMLENerfactoModel(cIMLEModel, NerfactoModel):
             clr_map_imgages_dict.update({key: colormaps.apply_depth_colormap(
                 all_images_dict[key], 
                 accumulation=all_images_dict["accumulation/" + key.split("/")[-1]]
-            ) for key in keys})
+            ) if "variance" not in key else colormaps.apply_colormap(all_images_dict[key]) for key in keys})
         return all_metrics_dict, clr_map_imgages_dict
