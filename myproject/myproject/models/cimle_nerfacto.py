@@ -37,7 +37,7 @@ from nerfstudio.utils.rich_utils import CONSOLE
 from nerfstudio.models.nerfacto import NerfactoModel, NerfactoModelConfig
 from nerfstudio.utils import colormaps
 from myproject.models.base_cimle_model import cIMLEModel, cIMLEModelConfig
-
+from myproject.fields.cimle_density_fields import cIMLEHashMLPDensityField
 from myproject.fields.cimle_nerfacto_field import cIMLENerfactoField
 
 @dataclass
@@ -48,6 +48,8 @@ class cIMLENerfactoModelConfig(cIMLEModelConfig, NerfactoModelConfig):
     
     color_cimle: bool=True
     """whether apply cimle only to color channel"""
+    use_cimle_in_proposal_networks: bool = False 
+    """Specifices whether to inject cimle to proposal networks"""
     
 
 
@@ -104,6 +106,16 @@ class cIMLENerfactoModel(cIMLEModel, NerfactoModel):
                 spatial_distortion=scene_contraction,
                 **prop_net_args,
                 implementation=self.config.implementation,
+            ) if not self.config.use_cimle_in_proposal_networks else \
+            cIMLEHashMLPDensityField(
+                self.scene_box.aabb,
+                spatial_distortion=scene_contraction,
+                **prop_net_args,
+                implementation=self.config.implementation,
+                cimle_ch=self.config.cimle_ch,
+                cimle_injection_type=self.config.cimle_injection_type,
+                num_layers_cimle=self.config.num_layers_cimle,
+                cimle_pretrain=self.config.cimle_pretrain
             )
             self.proposal_networks.append(network)
             self.density_fns.extend([network.density_fn for _ in range(num_prop_nets)])
@@ -115,6 +127,16 @@ class cIMLENerfactoModel(cIMLEModel, NerfactoModel):
                     spatial_distortion=scene_contraction,
                     **prop_net_args,
                     implementation=self.config.implementation,
+                ) if not self.config.use_cimle_in_proposal_networks else \
+                cIMLEHashMLPDensityField(
+                    self.scene_box.aabb,
+                    spatial_distortion=scene_contraction,
+                    **prop_net_args,
+                    implementation=self.config.implementation,
+                    cimle_ch=self.config.cimle_ch,
+                    cimle_injection_type=self.config.cimle_injection_type,
+                    num_layers_cimle=self.config.num_layers_cimle,
+                    cimle_pretrain=self.config.cimle_pretrain
                 )
                 self.proposal_networks.append(network)
             self.density_fns.extend([network.density_fn for network in self.proposal_networks])

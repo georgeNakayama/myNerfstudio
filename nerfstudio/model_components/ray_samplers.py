@@ -17,7 +17,7 @@ Collection of sampling strategies
 """
 
 from abc import abstractmethod
-from typing import Any, Callable, List, Optional, Protocol, Tuple, Union
+from typing import Any, Callable, List, Optional, Protocol, Tuple, Union, Dict
 
 import torch
 from jaxtyping import Float
@@ -573,6 +573,7 @@ class ProposalNetworkSampler(Sampler):
         self,
         ray_bundle: Optional[RayBundle] = None,
         density_fns: Optional[List[Callable]] = None,
+        **density_kwargs
     ) -> Tuple[RaySamples, List, List]:
         assert ray_bundle is not None
         assert density_fns is not None
@@ -582,7 +583,7 @@ class ProposalNetworkSampler(Sampler):
 
         n = self.num_proposal_network_iterations
         weights = None
-        ray_samples = None
+        ray_samples: Optional[RaySamples] = None
         updated = self._steps_since_update > self.update_sched(self._step) or self._step < 10
         for i_level in range(n + 1):
             is_prop = i_level < n
@@ -597,12 +598,13 @@ class ProposalNetworkSampler(Sampler):
                 annealed_weights = torch.pow(weights, self._anneal)
                 ray_samples = self.pdf_sampler(ray_bundle, ray_samples, annealed_weights, num_samples=num_samples)
             if is_prop:
+                assert ray_samples is not None
                 if updated:
                     # always update on the first step or the inf check in grad scaling crashes
-                    density = density_fns[i_level](ray_samples.frustums.get_positions())
+                    density = density_fns[i_level](ray_samples.frustums.get_positions(), metadata=ray_samples.metadata)
                 else:
                     with torch.no_grad():
-                        density = density_fns[i_level](ray_samples.frustums.get_positions())
+                        density = density_fns[i_level](ray_samples.frustums.get_positions(), metadata=ray_samples.metadata)
                 weights = ray_samples.get_weights(density)
                 weights_list.append(weights)  # (num_rays, num_samples)
                 ray_samples_list.append(ray_samples)
