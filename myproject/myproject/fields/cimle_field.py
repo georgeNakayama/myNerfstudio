@@ -70,9 +70,10 @@ class cIMLEField(nn.Module):
         assert zs.shape[-1] == self.in_cimle_ch, f"the latent dimension of cimle latent must match with {self.in_cimle_ch}. Got {zs.shape[-1]} instead"
         # print(h_table_latents.shape, cimle_embedding.shape)
         sh = original_latent.shape[:-1]
+        zs = zs.reshape(list(sh) + [self.in_cimle_ch])
         cimle_embedding = self.cimle_linear(zs) if not self.cimle_pretrain else torch.zeros(list(sh) + [self.out_cimle_ch]).to(original_latent.device)
         if self.cimle_type == "concat":
-            original_latent = torch.cat([original_latent, cimle_embedding.view(list(sh) + [self.out_cimle_ch])], dim=-1)
+            original_latent = torch.cat([original_latent, cimle_embedding], dim=-1)
         elif self.cimle_type == "add":
-            original_latent = original_latent + cimle_embedding.view(list(sh) + [self.out_cimle_ch])
+            original_latent = original_latent + cimle_embedding
         return original_latent
