@@ -595,7 +595,7 @@ class Trainer:
         """
 
         # all test images
-        if step_check(step, self.config.steps_per_test_all_images) or force_run:
+        if step_check(step, self.config.steps_per_test_all_images, run_at_zero=True) or force_run:
             metrics_dict, images_dict = self.pipeline.get_average_test_images_and_metrics(step=step)
             writer.put_dict(name="Test Images Metrics Dict (all images)", scalar_dict=metrics_dict, step=step)
             group = "Test Images"
