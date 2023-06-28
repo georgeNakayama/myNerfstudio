@@ -322,6 +322,10 @@ class Trainer:
 
         # save checkpoint at the end of training
         self.save_checkpoint(step)
+        # Do not perform test evaluation if there are no validation images
+        if self.pipeline.datamanager.test_dataset:
+            # eval test images at the end of training
+            self.test_iteration(step, force_run=True)
 
         # write out any remaining events (e.g., total train time)
         writer.write_out_storage()
@@ -573,15 +577,16 @@ class Trainer:
 
     @check_eval_enabled
     @profiler.time_function
-    def test_iteration(self, step: int) -> None:
+    def test_iteration(self, step: int, force_run: bool=False) -> None:
         """Run one iteration with different batch/image/all image evaluations depending on step size.
 
         Args:
             step: Current training step.
+            force_run: whether to run test evaluation overriding steps_per_test_all_images
         """
 
         # all test images
-        if step_check(step, self.config.steps_per_test_all_images):
+        if step_check(step, self.config.steps_per_test_all_images) or force_run:
             metrics_dict, images_dict = self.pipeline.get_average_test_images_and_metrics(step=step)
             writer.put_dict(name="Test Images Metrics Dict (all images)", scalar_dict=metrics_dict, step=step)
             group = "Test Images"

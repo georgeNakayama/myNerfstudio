@@ -22,7 +22,6 @@ from abc import abstractmethod
 from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple, Type, Union
-
 import torch
 from torch import nn
 from torch.nn import Parameter
@@ -33,7 +32,6 @@ from nerfstudio.configs.config_utils import to_immutable_dict
 from nerfstudio.data.scene_box import SceneBox
 from nerfstudio.engine.callbacks import TrainingCallback, TrainingCallbackAttributes
 from nerfstudio.model_components.scene_colliders import NearFarCollider
-
 
 # Model related configs
 @dataclass
@@ -78,11 +76,19 @@ class Model(nn.Module):
         self.num_train_data = num_train_data
         self.kwargs = kwargs
         self.collider = None
+        self.eval_ctx = False
 
         self.populate_modules()  # populate the modules
         self.callbacks = None
         # to keep track of which device the nn.Module is on
         self.device_indicator_param = nn.Parameter(torch.empty(0))
+
+
+    def setup_eval_ctx(self):
+        self.eval_ctx = True
+    
+    def clear_eval_ctx(self):
+        self.eval_ctx = False
 
     @property
     def device(self):

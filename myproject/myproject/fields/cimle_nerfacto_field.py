@@ -98,7 +98,7 @@ class cIMLENerfactoField(NerfactoField):
         use_pred_normals: bool = False,
         use_average_appearance_embedding: bool = False,
         spatial_distortion: Optional[SpatialDistortion] = None,
-        cimle_type: Literal["add", "concat"] = "concat",
+        cimle_injection_type: Literal["add", "concat"] = "concat",
         cimle_pretrain: bool = False,
         implementation: Literal["tcnn", "torch"] = "tcnn",
     ) -> None:
@@ -144,15 +144,15 @@ class cIMLENerfactoField(NerfactoField):
         self.cimle = cIMLEField(
             cimle_ch, 
             num_layers_cimle,
-            cimle_ch if cimle_type == "concat" else color_in_dim * int(color_cimle) + encoder.get_out_dim() * int(not color_cimle),
-            cimle_type,
+            cimle_ch if cimle_injection_type == "concat" else color_in_dim * int(color_cimle) + encoder.get_out_dim() * int(not color_cimle),
+            cimle_injection_type,
             cimle_pretrain=cimle_pretrain,
             cimle_act=cimle_activation
             )
 
         if color_cimle:
             self.mlp_head = MLP(
-                in_dim=self.direction_encoding.get_out_dim() + self.geo_feat_dim + self.cimle.out_dim * int(cimle_type == "concat"),
+                in_dim=self.direction_encoding.get_out_dim() + self.geo_feat_dim + self.cimle.out_dim * int(cimle_injection_type == "concat"),
                 num_layers=num_layers_color,
                 layer_width=hidden_dim_color,
                 out_dim=3,
@@ -162,7 +162,7 @@ class cIMLENerfactoField(NerfactoField):
             )
         else:
             network = MLP(
-                in_dim=encoder.get_out_dim() + self.cimle.out_dim * int(cimle_type == "concat"),
+                in_dim=encoder.get_out_dim() + self.cimle.out_dim * int(cimle_injection_type == "concat"),
                 num_layers=num_layers,
                 layer_width=hidden_dim,
                 out_dim=1 + self.geo_feat_dim,
