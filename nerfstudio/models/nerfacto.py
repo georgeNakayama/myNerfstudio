@@ -126,9 +126,8 @@ class NerfactoModelConfig(ModelConfig):
     """Use gradient scaler where the gradients are lower for points closer to the camera."""
     implementation: Literal["tcnn", "torch"] = "tcnn"
     """Which implementation to use for the model."""
-    appearance_embed_dim: int = 32
-    """Dimension of the appearance embedding."""
-
+    depth_method: Literal["expected", "median"] = "median"
+    """Which depth map rendering method to use."""
 
 class NerfactoModel(Model):
     """Nerfacto model
@@ -222,8 +221,7 @@ class NerfactoModel(Model):
         # renderers
         self.renderer_rgb = RGBRenderer(background_color=self.config.background_color)
         self.renderer_accumulation = AccumulationRenderer()
-        self.renderer_depth = DepthRenderer(method="median")
-        self.renderer_expected_depth = DepthRenderer(method="expected")
+        self.renderer_depth = DepthRenderer(method=self.config.depth_method)
         self.renderer_normals = NormalsRenderer()
 
         # shaders

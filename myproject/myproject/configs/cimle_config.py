@@ -114,7 +114,7 @@ cimle_nerfacto = MethodSpecification(
             cimle_sample_num=20,
             cimle_cache_interval=5000,
             cimle_num_rays_to_test=-1,
-            cimle_type="add",
+            cimle_injection_type="add",
             cimle_activation="relu",
             cimle_pretrain=False
                                   ),
@@ -167,8 +167,8 @@ cimle_nerfacto_pretrain = MethodSpecification(
             color_cimle=False,
             cimle_sample_num=20,
             cimle_cache_interval=5000,
-            cimle_num_rays_to_test=200*200,
-            cimle_type="add",
+            cimle_num_rays_to_test=-1,
+            cimle_injection_type="add",
             cimle_activation="relu",
             cimle_pretrain=True
                                   ),

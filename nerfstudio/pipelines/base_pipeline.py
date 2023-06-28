@@ -25,6 +25,7 @@ from time import time
 from typing import Any, Dict, List, Literal, Mapping, Optional, Tuple, Type, Union, cast
 
 import torch
+from torch import Tensor
 import torch.distributed as dist
 from PIL import Image
 from rich.progress import (
@@ -48,7 +49,7 @@ from nerfstudio.data.datamanagers.base_datamanager import (
 )
 from nerfstudio.engine.callbacks import TrainingCallback, TrainingCallbackAttributes, TrainingCallbackLocation
 from nerfstudio.models.base_model import Model, ModelConfig
-from nerfstudio.utils import profiler
+from nerfstudio.utils import profiler, model_context_manager
 
 
 def module_wrapper(ddp_or_model: Union[DDP, Model]) -> Model:
@@ -383,7 +384,7 @@ class VanillaPipeline(Pipeline):
 
 
     @profiler.time_function
-    def get_average_test_images_and_metrics(self, step: Optional[int] = None):
+    def get_average_test_images_and_metrics(self, step: Optional[int] = None) -> Tuple[Dict[str, Union[Tensor, float]], Dict[str, Tensor]]:
         """Iterate over all the images in the eval dataset and get the average.
 
         Returns:
@@ -402,22 +403,23 @@ class VanillaPipeline(Pipeline):
             transient=True,
         ) as progress:
             task = progress.add_task("[green]Evaluating all test images...", total=num_images)
-            for i, (camera_ray_bundle, batch) in enumerate(self.datamanager.fixed_indices_test_dataloader):
-                # time this the following line
-                inner_start = time()
-                height, width = camera_ray_bundle.shape
-                num_rays = height * width
-                outputs = self.model.get_outputs_for_camera_ray_bundle(camera_ray_bundle)
-                metrics_dict, images_dict = self.model.get_image_metrics_and_images(outputs, batch)
-                for k, v in images_dict.items():
-                    total_image_dict[f"{k}_{i}"] = v
-                assert "num_rays_per_sec" not in metrics_dict
-                metrics_dict["num_rays_per_sec"] = num_rays / (time() - inner_start)
-                fps_str = "fps"
-                assert fps_str not in metrics_dict
-                metrics_dict[fps_str] = metrics_dict["num_rays_per_sec"] / (height * width)
-                metrics_dict_list.append(metrics_dict)
-                progress.advance(task)
+            with model_context_manager.eval_context(self.model):
+                for i, (camera_ray_bundle, batch) in enumerate(self.datamanager.fixed_indices_test_dataloader):
+                    # time this the following line
+                    inner_start = time()
+                    height, width = camera_ray_bundle.shape
+                    num_rays = height * width
+                    outputs = self.model.get_outputs_for_camera_ray_bundle(camera_ray_bundle)
+                    metrics_dict, images_dict = self.model.get_image_metrics_and_images(outputs, batch)
+                    for k, v in images_dict.items():
+                        total_image_dict[f"{k}_{i}"] = v
+                    assert "num_rays_per_sec" not in metrics_dict
+                    metrics_dict["num_rays_per_sec"] = num_rays / (time() - inner_start)
+                    fps_str = "fps"
+                    assert fps_str not in metrics_dict
+                    metrics_dict[fps_str] = metrics_dict["num_rays_per_sec"] / (height * width)
+                    metrics_dict_list.append(metrics_dict)
+                    progress.advance(task)
         # average the metrics list
         metrics_dict = {}
         for key in metrics_dict_list[0].keys():

@@ -21,12 +21,12 @@ from __future__ import annotations
 from abc import abstractmethod
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple, Type, Union, Callable, Literal
-
+from typing import Any, Dict, List, Optional, Tuple, Type, Union, Callable, Literal, Mapping 
+from jaxtyping import Float
 import torch
 from torch import nn
 from torch import Tensor
-from torch.nn import Parameter
+from pathlib import Path
 from rich.progress import (
     BarColumn,
     MofNCompleteColumn,
@@ -36,14 +36,11 @@ from rich.progress import (
 )
 from nerfstudio.cameras.rays import RayBundle
 from nerfstudio.models.base_model import ModelConfig, Model
-from nerfstudio.configs.config_utils import to_immutable_dict
+from nerfstudio.utils.rich_utils import CONSOLE
 from nerfstudio.data.scene_box import SceneBox
 from nerfstudio.engine.callbacks import TrainingCallback, TrainingCallbackAttributes, TrainingCallbackLocation
-from nerfstudio.model_components.scene_colliders import NearFarCollider
-from nerfstudio.pipelines.base_pipeline import Pipeline
-from nerfstudio.data.datamanagers.base_datamanager import DataManager, VanillaDataManager
-from nerfstudio.utils import colormaps
-
+from nerfstudio.data.datamanagers.base_datamanager import  VanillaDataManager
+from nerfstudio.utils import model_context_manager
 
 # Model related configs
 @dataclass
@@ -62,12 +59,19 @@ class cIMLEModelConfig(ModelConfig):
     """specifies the number of layers in cimle linear"""
     cimle_activation: Literal["relu", "none"] = "relu"
     """specifies the activation used in cimle linear layers"""
-    cimle_type: Literal["concat", "add"] = "concat"
+    cimle_injection_type: Literal["concat", "add"] = "concat"
     """specifies the method to integrate cimle latents"""
-    cimle_num_rays_to_test: int = 200 * 200
+    cimle_num_rays_to_test: int = -1
     """speficies number of rays to test when caching cimle latents"""
     cimle_ensemble_num: int=5
     """specifies the number of cimle samples when calculating uncertainty"""
+    pretrained_path: Optional[Path]=None
+    """Specifies the path to pretrained model."""
+    cimle_pretrain: bool=False 
+    """Specifies whether it is pretraining"""
+    cimle_type: Literal["per_view", "per_scene"] = "per_view"
+    """Specifies the type of cIMLE sampling to be used"""
+    
 
 
 class cIMLEModel(Model):
@@ -95,9 +99,9 @@ class cIMLEModel(Model):
         self.cimle_cache_interval=self.config.cimle_cache_interval
         self.cimle_num_rays_to_test=self.config.cimle_num_rays_to_test
         self.cimle_ensemble_num=self.config.cimle_ensemble_num
-        self.cimle_type=self.config.cimle_type
+        self.cimle_injection_type=self.config.cimle_injection_type
         self.cimle_latents: nn.Embedding = nn.Embedding.from_pretrained(torch.zeros([num_train_data, self.cimle_ch]), freeze=True)
-
+        self.cimle_cached_samples: Optional[Tensor] = None
 
     def get_training_callbacks(
         self, training_callback_attributes: TrainingCallbackAttributes
@@ -109,7 +113,7 @@ class cIMLEModel(Model):
             assert datamanager.fixed_indices_train_dataloader is not None, "must set up dataloader that loads training full images!"
             self.eval()
             num_images = len(datamanager.fixed_indices_train_dataloader)
-            all_z = torch.normal(0.0, 1.0, size=(self.cimle_sample_num, num_images, self.cimle_ch), device=self.device)
+            all_z = self.sample_cimle_latent(self.cimle_sample_num, num_images)
             all_losses = torch.zeros((self.cimle_sample_num, num_images), device=self.device)
             with Progress(
                 TextColumn("[progress.description]{task.description}"),
@@ -143,15 +147,125 @@ class cIMLEModel(Model):
                     progress.update(task_id=task_outer, completed=n + 1)
                 # get the min latent
             ### Get the best loss and select and z code
-            idx_to_take = torch.argmin(all_losses, dim=0).reshape(1, -1, 1).expand(1, -1, self.cimle_ch) # [num_images]
-            selected_z = torch.gather(all_z, 0, idx_to_take)[0] # [num_images, cimle_ch]
-            self.set_cimle_latents(nn.Embedding.from_pretrained(selected_z, freeze=True).to(self.device))
+            
+            self.set_cimle_latents_from_loss(all_z, all_losses)
             
             self.train()
             
         assert training_callback_attributes.pipeline is not None
         cimle_caching_callback = TrainingCallback([TrainingCallbackLocation.BEFORE_TRAIN_ITERATION], cache_latents, update_every_num_iters=self.cimle_cache_interval, args=[training_callback_attributes.pipeline.datamanager])
-        return callbacks + [cimle_caching_callback]
+        
+        
+        
+        
+        def load_from_pretrain(step):
+            if self.config.pretrained_path is None:
+                CONSOLE.print("Pretrained model NOT loaded!~!")
+                return 
+            load_path = self.config.pretrained_path
+            if not load_path.is_file():
+                CONSOLE.print(f"Provided pretrained path {load_path} is invalid! Starting from scratch instead!~!")
+                return 
+            CONSOLE.print(f"Loading Nerfstudio pretrained model from {load_path}...")
+            state_dict: Dict[str, torch.Tensor] = torch.load(load_path, map_location="cpu")["pipeline"]
+            is_ddp_model_state = True
+            model_state = {}
+            for key, value in state_dict.items():
+                if key.startswith("_model."):
+                    # remove the "_model." prefix from key
+                    model_state[key[len("_model.") :]] = value
+                    # make sure that the "module." prefix comes from DDP,
+                    # rather than an attribute of the model named "module"
+                    if not key.startswith("_model.module."):
+                        is_ddp_model_state = False
+            # remove "module." prefix added by DDP
+            if is_ddp_model_state:
+                model_state = {key[len("module.") :]: value for key, value in model_state.items()}
+            
+            self.load_state_dict_from_pretrained(model_state)
+            CONSOLE.print(f"Finished loading Nerfstudio pretrained model from {load_path}...")
+        
+        load_cb = TrainingCallback([TrainingCallbackLocation.BEFORE_TRAIN], load_from_pretrain)
+        
+        if not self.config.cimle_pretrain:
+            return callbacks + [cimle_caching_callback, load_cb]
+        return callbacks
+
+    def clear_eval_ctx(self):
+        self.eval_ctx = False
+        self.cimle_cached_samples = None
+
+    def sample_cimle_latent(self, cimle_sample_num: int, image_num: int=1) -> Float[Tensor, "sample_num image_num cimle_ch"]:
+        
+        if self.config.cimle_type == "per_scene":
+            z = torch.normal(0.0, 1.0, size=(cimle_sample_num, 1, self.cimle_ch), device=self.device).repeat_interleave(image_num, dim=1)
+            if self.eval_ctx and self.cimle_cached_samples is None:
+                self.cimle_cached_samples = z
+            
+            if self.cimle_cached_samples is not None and self.cimle_cached_samples.shape[:2] == (cimle_sample_num, image_num):
+                return self.cimle_cached_samples
+            
+            return z
+        if self.config.cimle_type == "per_view":
+            return torch.normal(0.0, 1.0, size=(cimle_sample_num, image_num, self.cimle_ch), device=self.device)
+        
+        CONSOLE.print(f"cIMLE type {self.config.cimle_type} is not implemented!")
+        raise NotImplementedError
+            
+    def sample_cimle_latent_single(self) -> Float[Tensor, "1 cimle_ch"]:
+        if self.config.cimle_type == "per_scene":
+            z = torch.normal(0.0, 1.0, size=(1, self.cimle_ch), device=self.device)
+            
+            if self.eval_ctx and self.cimle_cached_samples is None:
+                self.cimle_cached_samples = z
+            
+            if self.cimle_cached_samples is not None:
+                return self.cimle_cached_samples
+            
+        elif self.config.cimle_type == "per_view":
+            z = torch.normal(0.0, 1.0, size=(1, self.cimle_ch), device=self.device)
+        else:
+            CONSOLE.print(f"cIMLE type {self.config.cimle_type} is not implemented!")
+            raise NotImplementedError
+        return z
+    
+    def set_cimle_latents_from_loss(self, all_z: Float[Tensor, "num_cimle_sample num_images cimle_ch"], all_losses: Float[Tensor, "num_cimle_sample num_images"]) -> None:
+        num_images = all_z.shape[1]
+        if self.config.cimle_type == "per_scene":
+            all_losses = all_losses.mean(1)
+            idx_to_take = torch.argmin(all_losses, dim=0).reshape(1, 1, 1).expand(1, num_images, self.cimle_ch) # [num_images]
+        elif self.config.cimle_type == "per_view":
+            idx_to_take = torch.argmin(all_losses, dim=0).reshape(1, -1, 1).expand(1, -1, self.cimle_ch) # [num_images]
+        else:
+            raise NotImplementedError
+        selected_z = torch.gather(all_z, 0, idx_to_take)[0] # [num_images, cimle_ch]
+        self.cimle_latents =  nn.Embedding.from_pretrained(selected_z, freeze=True).to(self.device)
+
+    def load_state_dict_from_pretrained(self, state_dict: Mapping[str, torch.Tensor]):
+        new_state_dict: Dict[str, Any] = {}
+        model_state_dict: Dict[str, torch.Tensor] = self.state_dict()
+        for k in state_dict.keys():
+            if "cimle" in k:
+                CONSOLE.print(f"Skip loading parameter: {k}")
+                continue
+            if k in model_state_dict.keys():
+                if state_dict[k].shape != model_state_dict[k].shape:
+                    CONSOLE.print(f"Skip loading parameter: {k}, "
+                                f"required shape: {model_state_dict[k].shape}, "
+                                f"loaded shape: {state_dict[k].shape}")
+                    continue
+                new_state_dict[k] = state_dict[k]
+            else:
+                CONSOLE.print(f"Dropping parameter {k}")
+        for k in model_state_dict.keys():
+            if k not in state_dict.keys():
+                CONSOLE.print(f"Layer {k} not loaded!")
+        missing_keys, unexpected_keys = super().load_state_dict(new_state_dict, strict=False)
+        for k in missing_keys:
+            CONSOLE.print(f"parameter {k} is missing from pretrained model!")
+        for k in unexpected_keys:
+            CONSOLE.print(f"parameter {k} is unexpected from pretrained model!")
+    
 
     @abstractmethod
     def get_cimle_loss(self, outputs, batch) -> torch.Tensor:
@@ -161,8 +275,6 @@ class cIMLEModel(Model):
             cimle loss is returned
         """
 
-    def set_cimle_latents(self, latents: nn.Embedding) -> None:
-        self.cimle_latents = latents
 
     def forward(self, ray_bundle: RayBundle, sample_latent: bool=False, **kwargs) -> Dict[str, Union[torch.Tensor, List]]:
         """Run forward starting with a ray bundle. This outputs different things depending on the configuration
@@ -177,7 +289,7 @@ class cIMLEModel(Model):
         camera_indices = ray_bundle.camera_indices.squeeze()
         if sample_latent:
             max_cam_ind = int(camera_indices.max())
-            samples = torch.randn([max_cam_ind + 1, self.cimle_ch]).to(self.device)
+            samples = self.sample_cimle_latent(1, max_cam_ind + 1)[0]
             cimle_latents = samples[camera_indices.flatten()]
             ray_bundle.metadata["cimle_latent"] = cimle_latents
         elif "cimle_latent" not in ray_bundle.metadata:
@@ -196,7 +308,7 @@ class cIMLEModel(Model):
         Args:
             camera_ray_bundle: ray bundle to calculate outputs over
         """
-        cimle_latents = torch.randn(self.cimle_ensemble_num, self.cimle_ch).to(self.device)
+        cimle_latents = self.sample_cimle_latent(self.cimle_ensemble_num).reshape(self.cimle_ensemble_num, self.cimle_ch)
         all_outputs = []
         for n in range(self.cimle_ensemble_num):
             _z = cimle_latents[n]

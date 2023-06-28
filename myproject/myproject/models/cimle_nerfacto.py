@@ -48,10 +48,7 @@ class cIMLENerfactoModelConfig(cIMLEModelConfig, NerfactoModelConfig):
     
     color_cimle: bool=True
     """whether apply cimle only to color channel"""
-    pretrained_path: Optional[Path]=None
-    """Specifies the path to pretrained model."""
-    cimle_pretrain: bool=False 
-    """Specifies whether it is pretraining"""
+    
 
 
 class cIMLENerfactoModel(cIMLEModel, NerfactoModel):
@@ -91,7 +88,7 @@ class cIMLENerfactoModel(cIMLEModel, NerfactoModel):
             use_pred_normals=self.config.predict_normals,
             use_average_appearance_embedding=self.config.use_average_appearance_embedding,
             implementation=self.config.implementation,
-            cimle_type=self.config.cimle_type,
+            cimle_injection_type=self.config.cimle_injection_type,
             cimle_pretrain=self.config.cimle_pretrain
         )
 
@@ -137,41 +134,8 @@ class cIMLENerfactoModel(cIMLEModel, NerfactoModel):
         self, training_callback_attributes: TrainingCallbackAttributes
     ) -> List[TrainingCallback]:
         
-
-        def load_from_pretrain(step):
-            if self.config.pretrained_path is None:
-                CONSOLE.print("Pretrained model NOT loaded!~!")
-                return 
-            load_path = self.config.pretrained_path
-            if not load_path.is_file():
-                CONSOLE.print(f"Provided pretrained path {load_path} is invalid! Starting from scratch instead!~!")
-                return 
-            CONSOLE.print(f"Loading Nerfstudio pretrained model from {load_path}...")
-            state_dict: Dict[str, torch.Tensor] = torch.load(load_path, map_location="cpu")["pipeline"]
-            is_ddp_model_state = True
-            model_state = {}
-            for key, value in state_dict.items():
-                if key.startswith("_model."):
-                    # remove the "_model." prefix from key
-                    model_state[key[len("_model.") :]] = value
-                    # make sure that the "module." prefix comes from DDP,
-                    # rather than an attribute of the model named "module"
-                    if not key.startswith("_model.module."):
-                        is_ddp_model_state = False
-            # remove "module." prefix added by DDP
-            if is_ddp_model_state:
-                model_state = {key[len("module.") :]: value for key, value in model_state.items()}
-            
-            self.load_state_dict_from_pretrained(model_state)
-            CONSOLE.print(f"Finished loading Nerfstudio pretrained model from {load_path}...")
-        
-        load_cb = TrainingCallback([TrainingCallbackLocation.BEFORE_TRAIN], load_from_pretrain)
-        
         callbacks = NerfactoModel.get_training_callbacks(self, training_callback_attributes)
-        if not self.config.cimle_pretrain:
-            callbacks += cIMLEModel.get_training_callbacks(self, training_callback_attributes)
-            callbacks += [load_cb]
-            
+        callbacks += cIMLEModel.get_training_callbacks(self, training_callback_attributes)
         return callbacks
     
     def get_cimle_loss(self, outputs, batch) -> torch.Tensor:
@@ -182,33 +146,6 @@ class cIMLENerfactoModel(cIMLEModel, NerfactoModel):
         """
         image = batch["image"].to(self.device)
         return self.rgb_loss(image, outputs["rgb"])
-    
-    def load_state_dict_from_pretrained(self, state_dict: Mapping[str, torch.Tensor]):
-        new_state_dict: Dict[str, Any] = {}
-        model_state_dict: Dict[str, torch.Tensor] = self.state_dict()
-        for k in state_dict.keys():
-            if "cimle" in k:
-                CONSOLE.print(f"Skip loading parameter: {k}")
-                continue
-            if k in model_state_dict.keys():
-                if state_dict[k].shape != model_state_dict[k].shape:
-                    CONSOLE.print(f"Skip loading parameter: {k}, "
-                                f"required shape: {model_state_dict[k].shape}, "
-                                f"loaded shape: {state_dict[k].shape}")
-                    continue
-                new_state_dict[k] = state_dict[k]
-            else:
-                CONSOLE.print(f"Dropping parameter {k}")
-        for k in model_state_dict.keys():
-            if k not in state_dict.keys():
-                CONSOLE.print(f"Layer {k} not loaded!")
-        missing_keys, unexpected_keys = super().load_state_dict(new_state_dict, strict=False)
-        for k in missing_keys:
-            CONSOLE.print(f"parameter {k} is missing from pretrained model!")
-        for k in unexpected_keys:
-            CONSOLE.print(f"parameter {k} is unexpected from pretrained model!")
-    
-    
     
     
     def get_image_metrics_and_images(
