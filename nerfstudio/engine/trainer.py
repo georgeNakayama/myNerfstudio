@@ -317,6 +317,8 @@ class Trainer:
                 if self.pipeline.datamanager.eval_dataset:
                     self.eval_iteration(step)
                     
+                if self.pipeline.datamanager.test_dataset:
+                    self.test_iteration(step)
 
                 if step_check(step, self.config.steps_per_save):
                     self.save_checkpoint(step)
@@ -325,10 +327,6 @@ class Trainer:
 
         # save checkpoint at the end of training
         self.save_checkpoint(step)
-        # Do not perform test evaluation if there are no validation images
-        if self.pipeline.datamanager.test_dataset:
-            # eval test images at the end of training
-            self.test_iteration(step, force_run=True)
 
         # write out any remaining events (e.g., total train time)
         writer.write_out_storage()
