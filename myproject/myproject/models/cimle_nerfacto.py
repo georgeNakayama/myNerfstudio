@@ -85,7 +85,7 @@ class cIMLENerfactoModel(cIMLEModel, NerfactoModel):
             log2_hashmap_size=self.config.log2_hashmap_size,
             hidden_dim_color=self.config.hidden_dim_color,
             hidden_dim_transient=self.config.hidden_dim_transient,
-            appearance_embedding_dim=self.config.appearance_embedding_dim,
+            appearance_embedding_dim=self.config.appearance_embed_dim,
             spatial_distortion=scene_contraction,
             num_images=self.num_train_data,
             use_pred_normals=self.config.predict_normals,
