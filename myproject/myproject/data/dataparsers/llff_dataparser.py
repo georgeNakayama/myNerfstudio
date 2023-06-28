@@ -233,7 +233,6 @@ class LLFF(DataParser):
             maskfiles = [maskfiles[i] for i in ids]
         else:
             maskfiles = None
-        print(maskfiles)
             
         H, W, focal = hwf
         cameras = Cameras(
