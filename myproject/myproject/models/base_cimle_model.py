@@ -260,11 +260,7 @@ class cIMLEModel(Model):
         for k in model_state_dict.keys():
             if k not in state_dict.keys():
                 CONSOLE.print(f"Layer {k} not loaded!")
-        missing_keys, unexpected_keys = super().load_state_dict(new_state_dict, strict=False)
-        for k in missing_keys:
-            CONSOLE.print(f"parameter {k} is missing from pretrained model!")
-        for k in unexpected_keys:
-            CONSOLE.print(f"parameter {k} is unexpected from pretrained model!")
+        super().load_state_dict(new_state_dict, strict=False)
     
 
     @abstractmethod

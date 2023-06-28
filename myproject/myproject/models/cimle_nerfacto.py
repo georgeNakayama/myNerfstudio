@@ -21,6 +21,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Literal, Mapping, Tuple, Type, Optional
 from pathlib import Path
+from collections import defaultdict
 import numpy as np
 import torch
 from torch.nn import Parameter
@@ -147,9 +148,34 @@ class cIMLENerfactoModel(cIMLEModel, NerfactoModel):
 
 
     def get_param_groups(self) -> Dict[str, List[Parameter]]:
-        param_groups = {}
-        param_groups["proposal_networks"] = list(self.proposal_networks.parameters())
-        param_groups.update(self.field.get_param_group())
+        param_groups: Dict[str, List[Parameter]] = {}
+        prop_network_pgs: Dict[str, List[Parameter]] = defaultdict(list)
+        field_pgs: Dict[str, List[Parameter]] = defaultdict(list)
+        
+        for name, param in self.proposal_networks.named_parameters():
+            if "cimle" in name.split("."):
+                CONSOLE.print(f"layer {name} added to [green]proposal_networks.cimle[/green]")
+                prop_network_pgs["proposal_networks.cimle"].append(param)
+            else:
+                CONSOLE.print(f"layer {name} added to [red]proposal_networks[/red]")
+                prop_network_pgs["proposal_networks"].append(param)
+        for name, param in self.field.named_parameters():
+            if "cimle" in name.split("."):
+                CONSOLE.print(f"layer {name} added to [green]fields.cimle[/green]")
+                field_pgs["fields.cimle"].append(param)
+            else:
+                CONSOLE.print(f"layer {name} added to [red]fields[/red]")
+                field_pgs["fields"].append(param)
+                
+        prop_network_pgs.update(field_pgs)
+        
+        for k, v in prop_network_pgs.items():
+            if "cimle" in k.split("."):
+                if not self.config.cimle_pretrain:
+                    param_groups[k] = v 
+            else:
+                param_groups[k] = v
+                
         return param_groups
     
     def get_training_callbacks(
