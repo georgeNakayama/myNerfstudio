@@ -425,6 +425,7 @@ class VanillaPipeline(Pipeline):
         """
         self.eval()
         metrics_dict_list = []
+        assert isinstance(self.datamanager, VanillaDataManager)
         assert self.datamanager.fixed_indices_eval_dataloader is not None
         num_images = len(self.datamanager.fixed_indices_eval_dataloader)
         with Progress(
