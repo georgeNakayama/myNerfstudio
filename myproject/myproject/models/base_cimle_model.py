@@ -309,6 +309,7 @@ class cIMLEModel(Model):
             camera_ray_bundle: ray bundle to calculate outputs over
         """
         cimle_latents = self.sample_cimle_latent(self.cimle_ensemble_num).reshape(self.cimle_ensemble_num, self.cimle_ch)
+        print(cimle_latents.max())
         all_outputs = []
         for n in range(self.cimle_ensemble_num):
             _z = cimle_latents[n]
