@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Tuple, Type, Union
 
 import torch
-from rich.progress import Console
+from rich.console import Console
 from torch.nn import Parameter
 from torch import Tensor
 from typing_extensions import Literal

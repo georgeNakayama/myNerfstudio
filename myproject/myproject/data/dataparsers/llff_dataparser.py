@@ -71,7 +71,7 @@ def _minify(basedir: Path, factors=[], resolutions=[]):
     wd = os.getcwd()
 
     for r in factors + resolutions:
-        if isinstance(r, int):
+        if isinstance(r, int): 
             name = 'images_{}'.format(r)
             resizearg = '{}%'.format(100./r)
         else:
@@ -211,9 +211,8 @@ class LLFF(DataParser):
         poses = torch.from_numpy(poses)
 
 
-        sc = 1. if self.scale_factor is None else 1./(bds.min() * self.scale_factor)
+        sc = 1. if self.scale_factor is None else 1. / (bds.min() * self.scale_factor)
         bds *= sc
-
         poses[:, :3, 3] *= sc
         poses, transform_matrix = camera_utils.auto_orient_and_center_poses(
             torch.cat([poses, torch.tensor([0, 0, 0, 1]).reshape(1, 1, 4).expand(len(imgfiles), 1, 4)], dim=1),
@@ -222,9 +221,7 @@ class LLFF(DataParser):
         )
 
         
-        # in x,y,z order
-        aabb_scale = self.scene_scale
-        scene_box = SceneBox(aabb=torch.tensor([[-aabb_scale, -aabb_scale, -aabb_scale], [aabb_scale, aabb_scale, aabb_scale]], dtype=torch.float32))
+        
         num_train = int(len(imgfiles) * self.train_ratio)
         i_perm = np.random.RandomState(self.select_seed).permutation(len(imgfiles))
         ids = i_perm[:num_train] if split == "train" else i_perm[num_train:]
@@ -235,6 +232,29 @@ class LLFF(DataParser):
             maskfiles = None
             
         H, W, focal = hwf
+        all_cameras = Cameras(
+            camera_to_worlds=poses[:, :3, :4],
+            fx=focal,
+            fy=focal,
+            cx=W / 2.0,
+            cy=H / 2.0,
+            height=int(H),
+            width=int(W),
+            camera_type=CameraType.PERSPECTIVE,
+        )
+        
+        # in x,y,z order
+        coords_grid = all_cameras.get_image_coords()
+        bd_coords = torch.stack([coords_grid[0, 0],coords_grid[0, -1],coords_grid[-1, 0], coords_grid[-1, -1]], dim=0).repeat(poses.shape[0], 1)
+        bd_rays = all_cameras.generate_rays(torch.arange(poses.shape[0]).unsqueeze(1).repeat_interleave(4, dim=0).reshape(-1, 1), bd_coords)
+        aabb_scale = self.scene_scale
+        boundaries = bd_rays.origins.repeat(2, 1) + bd_rays.directions.repeat(2, 1) * torch.from_numpy(bds).repeat_interleave(4, dim=0).transpose(0,1).reshape(-1, 1)
+        tight_bd_min, tight_bd_max = boundaries.min(0)[0], boundaries.max(0)[0]
+        tight_bd_center = (tight_bd_min + tight_bd_max) / 2.0
+        bd_min = tight_bd_min - (tight_bd_center - tight_bd_min) * 0.1
+        bd_max = tight_bd_max + (tight_bd_center - tight_bd_max) * 0.1
+        scene_box = SceneBox(aabb=torch.stack([bd_min , bd_max], dim=0) * aabb_scale)
+        
         cameras = Cameras(
             camera_to_worlds=poses[ids, :3, :4],
             fx=focal,
@@ -245,7 +265,6 @@ class LLFF(DataParser):
             width=int(W),
             camera_type=CameraType.PERSPECTIVE,
         )
-
         dataparser_outputs = DataparserOutputs(
             image_filenames=[imgfiles[i] for i in ids],
             mask_filenames=maskfiles,
