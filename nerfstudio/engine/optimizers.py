@@ -89,6 +89,8 @@ class Optimizers:
         self.optimizers = {}
         self.schedulers = {}
         self.parameters = {}
+        if "valid_param_groups" not in self.config.keys():
+            self.config["valid_param_groups"] = ValidParamGroupsConfig(valid_pgs=list(param_groups.keys()))
         assert isinstance(self.config["valid_param_groups"], ValidParamGroupsConfig)
         valid_pgs = self.config["valid_param_groups"].valid_pgs
         for param_group_name, params in param_groups.items():

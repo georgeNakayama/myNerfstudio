@@ -154,17 +154,13 @@ class cIMLENerfactoModel(cIMLEModel, NerfactoModel):
         
         for name, param in self.proposal_networks.named_parameters():
             if "cimle" in name.split("."):
-                CONSOLE.print(f"layer {name} added to [green]proposal_networks.cimle[/green]")
                 prop_network_pgs["proposal_networks.cimle"].append(param)
             else:
-                CONSOLE.print(f"layer {name} added to [red]proposal_networks[/red]")
                 prop_network_pgs["proposal_networks"].append(param)
         for name, param in self.field.named_parameters():
             if "cimle" in name.split("."):
-                CONSOLE.print(f"layer {name} added to [green]fields.cimle[/green]")
                 field_pgs["fields.cimle"].append(param)
             else:
-                CONSOLE.print(f"layer {name} added to [red]fields[/red]")
                 field_pgs["fields"].append(param)
                 
         prop_network_pgs.update(field_pgs)
