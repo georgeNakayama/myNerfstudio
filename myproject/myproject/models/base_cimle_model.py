@@ -110,7 +110,7 @@ class cIMLEModel(Model):
         self.pdf_sampler = PDFSampler(num_samples=self.config.num_points_sample, train_stratified=False)
         self.distribution_distance: Optional[nn.Module] = None
         if self.config.distribution_metric == "chamfer":
-            self.distribution_distance = ChamferPairWiseDistance(reduction="mean")
+            self.distribution_distance = ChamferPairWiseDistance(reduction=["mean", "max"])
 
     def get_training_callbacks(
         self, training_callback_attributes: TrainingCallbackAttributes
@@ -401,7 +401,8 @@ class cIMLEModel(Model):
                 num_rays_per_chunk = self.config.eval_num_rays_per_chunk
                 image_height, image_width, n_samples = weights_list[0].shape[:3]
                 num_rays = image_height * image_width
-                all_pairwise_diff_list = []
+                all_pairwise_diff_list_mean = []
+                all_pairwise_diff_list_max = []
                 for num, idx in enumerate(range(0, num_rays, num_rays_per_chunk)):
                     new_samples_list = []
                     for i in range(len(samples_list)):
@@ -412,15 +413,14 @@ class cIMLEModel(Model):
                         chunk_samples: RaySamples = image_samples_list[num]
                         chunk_weights: Tensor = image_weights.view(-1, n_samples, 1)[start_idx: end_idx]
                         chunk_ray_bundle: RayBundle = ray_bundle.get_row_major_sliced_ray_bundle(start_idx, end_idx)
-                        # print(num, start_idx, end_idx, chunk_samples.shape, chunk_weights.shape[0], chunk_ray_bundle.shape)
                         assert chunk_samples.shape[0] == chunk_weights.shape[0] == chunk_ray_bundle.shape[0]
                         new_samples = self.pdf_sampler(chunk_ray_bundle, chunk_samples, chunk_weights)
-                        # print(new_samples.shape)
                         new_samples_list.append(new_samples)
-                    pairwise_diff = self.distribution_distance(new_samples_list).detach().cpu()
-                    # print(pairwise_diff.shape)
-                    all_pairwise_diff_list.append(pairwise_diff)
-                distribution_diff_map[f"{k}/distribution_variance"] = torch.cat(all_pairwise_diff_list).reshape(image_height, image_width, -1)
+                    pairwise_diff_mean, pairwise_diff_max = self.distribution_distance(new_samples_list)
+                    all_pairwise_diff_list_mean.append(pairwise_diff_mean.detach().cpu())
+                    all_pairwise_diff_list_max.append(pairwise_diff_max.detach().cpu())
+                distribution_diff_map[f"{k}/distribution_variance_mean"] = torch.cat(all_pairwise_diff_list_mean).reshape(image_height, image_width, -1)
+                distribution_diff_map[f"{k}/distribution_variance_max"] = torch.cat(all_pairwise_diff_list_max).reshape(image_height, image_width, -1)
             all_images_dict.update(distribution_diff_map)
             
 

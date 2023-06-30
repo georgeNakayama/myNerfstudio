@@ -28,7 +28,7 @@ class ChamferDistance(torch.nn.Module):
         bidirectional: Optional[bool] = False,
         reverse: Optional[bool] = False,
         reduction: Optional[str] = "mean",
-    ):
+    ) -> torch.Tensor:
 
         if not isinstance(source_cloud, torch.Tensor):
             raise TypeError(

@@ -1,17 +1,18 @@
 import torch 
 import torch.nn as nn
-from typing import Callable, List, Literal, Any
+from torch import Tensor
+from typing import Callable, List, Literal, Any, Optional, Union
 from nerfstudio.cameras.rays import RaySamples
 from itertools import combinations 
 from chamferdist import ChamferDistance
 
 class BasePairWiseDistance(nn.Module):
-    def __init__(self, eval_func: Callable, reduction: Literal["sum", "mean", "none"]="mean"):
+    def __init__(self, eval_func: Callable, reduction: Optional[List[Literal["sum", "mean", "max"]]]=["mean"]):
         super().__init__()
         self.eval_func = eval_func
         self.reduction=reduction
         
-    def forward(self, sample_list: List[RaySamples]):
+    def forward(self, sample_list: List[RaySamples]) -> Union[Tensor, List[Tensor]]:
         all_dists = []
         for s1, s2 in combinations(sample_list, 2):
             assert s1.spacing_to_euclidean_fn is not None and s2.spacing_to_euclidean_fn is not None
@@ -24,11 +25,18 @@ class BasePairWiseDistance(nn.Module):
             dist = self.eval_func(s1_medians[..., None], s2_medians[..., None])
             all_dists.append(dist)
         all_dists = torch.stack(all_dists, dim=0)
-        if self.reduction == "sum":
-            all_dists = all_dists.sum(0)
-        elif self.reduction == "mean":
-            all_dists = all_dists.mean(0)
-        return all_dists
+        
+        if self.reduction is None:
+            return all_dists
+        return_list = []
+        for red in self.reduction:
+            if red == "sum":
+                return_list.append(all_dists.sum(0))
+            elif red == "mean":
+                return_list.append(all_dists.mean(0))
+            elif red == "max":
+                return_list.append(all_dists.max(0)[0])
+        return return_list
     
 class ChamferPairWiseDistance(BasePairWiseDistance):
     def __init__(self, reduction: Literal['sum', 'mean', 'none'] = "mean"):
