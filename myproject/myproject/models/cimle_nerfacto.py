@@ -143,8 +143,8 @@ class cIMLENerfactoModel(cIMLEModel, NerfactoModel):
             self.density_fns.extend([network.density_fn for network in self.proposal_networks])
 
         
-    def get_outputs(self, ray_bundle: RayBundle):
-        return NerfactoModel.get_outputs(self, ray_bundle)
+    def get_outputs(self, ray_bundle: RayBundle, return_samples: bool = False, **kwargs):
+        return NerfactoModel.get_outputs(self, ray_bundle, return_samples=return_samples)
 
 
     def get_param_groups(self) -> Dict[str, List[Parameter]]:

@@ -277,7 +277,7 @@ class NerfactoModel(Model):
             )
         return callbacks
 
-    def get_outputs(self, ray_bundle: RayBundle):
+    def get_outputs(self, ray_bundle: RayBundle, return_samples:bool=False):
         ray_samples: RaySamples
         ray_samples, weights_list, ray_samples_list = self.proposal_sampler(ray_bundle, density_fns=self.density_fns)
         field_outputs = self.field.forward(ray_samples, compute_normals=self.config.predict_normals)
@@ -324,10 +324,9 @@ class NerfactoModel(Model):
 
         for i in range(self.config.num_proposal_iterations):
             outputs[f"prop_depth_{i}"] = self.renderer_depth(weights=weights_list[i], ray_samples=ray_samples_list[i])
-            
-        outputs["weights_dict"] = dict(zip([f"prop_depth_{i}" for i in range(self.config.num_proposal_iterations)] + ["depth"], weights_list))
-        outputs["ray_samples_dict"] = dict(zip([f"prop_depth_{i}" for i in range(self.config.num_proposal_iterations)] + ["depth"], ray_samples_list))
-        outputs["ray_bundle"] = ray_bundle
+        if return_samples:
+            outputs["weights_dict"] = dict(zip([f"prop_depth_{i}" for i in range(self.config.num_proposal_iterations)] + ["depth"], weights_list))
+            outputs["ray_samples_dict"] = dict(zip([f"prop_depth_{i}" for i in range(self.config.num_proposal_iterations)] + ["depth"], ray_samples_list))
 
         return outputs
 

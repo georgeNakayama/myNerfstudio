@@ -22,7 +22,7 @@ from abc import abstractmethod
 from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple, Type, Union, Callable, Literal, Mapping 
-from jaxtyping import Float
+from jaxtyping import Float, Shaped
 import torch
 from torch import nn
 from torch import Tensor
@@ -34,7 +34,7 @@ from rich.progress import (
     TextColumn,
     TimeElapsedColumn,
 )
-from nerfstudio.cameras.rays import RayBundle
+from nerfstudio.cameras.rays import RayBundle, RaySamples, Frustums
 from nerfstudio.models.base_model import ModelConfig, Model
 from nerfstudio.utils.rich_utils import CONSOLE
 from nerfstudio.data.scene_box import SceneBox
@@ -42,6 +42,7 @@ from nerfstudio.engine.callbacks import TrainingCallback, TrainingCallbackAttrib
 from nerfstudio.data.datamanagers.base_datamanager import  VanillaDataManager
 from nerfstudio.model_components.ray_samplers import PDFSampler
 from myproject.model_coponents.distribution_metrics import ChamferPairWiseDistance
+from myproject.utils.myutils import sync_data
 # Model related configs
 @dataclass
 class cIMLEModelConfig(ModelConfig):
@@ -109,7 +110,7 @@ class cIMLEModel(Model):
         self.pdf_sampler = PDFSampler(num_samples=self.config.num_points_sample, train_stratified=False)
         self.distribution_distance: Optional[nn.Module] = None
         if self.config.distribution_metric == "chamfer":
-            self.distribution_distance = ChamferPairWiseDistance(reduction="none")
+            self.distribution_distance = ChamferPairWiseDistance(reduction="mean")
 
     def get_training_callbacks(
         self, training_callback_attributes: TrainingCallbackAttributes
@@ -117,6 +118,7 @@ class cIMLEModel(Model):
         """Returns a list of callbacks that run functions at the specified training iterations."""
         callbacks = super().get_training_callbacks(training_callback_attributes)
         
+        @torch.no_grad()
         def cache_latents(datamanager: VanillaDataManager, step):
             assert datamanager.fixed_indices_train_dataloader is not None, "must set up dataloader that loads training full images!"
             self.eval()
@@ -280,7 +282,7 @@ class cIMLEModel(Model):
         """
 
 
-    def forward(self, ray_bundle: RayBundle, sample_latent: bool=False, **kwargs) -> Dict[str, Union[torch.Tensor, List]]:
+    def forward(self, ray_bundle: RayBundle, sample_latent: bool=False, return_samples:bool=False, **kwargs) -> Dict[str, Union[torch.Tensor, List]]:
         """Run forward starting with a ray bundle. This outputs different things depending on the configuration
         of the model and whether or not the batch is provided (whether or not we are training basically)
 
@@ -302,7 +304,7 @@ class cIMLEModel(Model):
             ray_bundle.metadata["cimle_latent"] = cimle_latents
             
 
-        return super().forward(ray_bundle, sample_latent=sample_latent, **kwargs)
+        return super().forward(ray_bundle, return_samples=return_samples, **kwargs)
 
 
     @torch.no_grad()
@@ -320,24 +322,43 @@ class cIMLEModel(Model):
             image_height, image_width = camera_ray_bundle.origins.shape[:2]
             num_rays = len(camera_ray_bundle)
             camera_ray_bundle.metadata["cimle_latent"] = _z.reshape(1, 1, self.cimle_ch).expand(image_height, image_width, -1)
-            outputs_dict: Dict[str, torch.Tensor] = {}
+            outputs_dict: Dict[str, Union[torch.Tensor, List[Tensor], Dict[str, Tensor], RayBundle]] = {}
             outputs_lists = defaultdict(list)
             for i in range(0, num_rays, num_rays_per_chunk):
                 start_idx = i
                 end_idx = i + num_rays_per_chunk
                 ray_bundle = camera_ray_bundle.get_row_major_sliced_ray_bundle(start_idx, end_idx)
-                outputs = self.forward(ray_bundle=ray_bundle)
+                outputs = self.forward(ray_bundle=ray_bundle, return_samples=True)
                 for output_name, output in outputs.items():  # type: ignore
-                    if not torch.is_tensor(output):
-                        # TODO: handle lists of tensors as well
-                        continue
-                    outputs_lists[output_name].append(output)
-            for output_name, outputs_list in outputs_lists.items():
-                outputs_dict[output_name] = torch.cat(outputs_list).view(image_height, image_width, -1)  # type: ignore
+                    outputs_lists = sync_data(output_name, output, outputs_lists)
             
+            for output_name, outputs_list in outputs_lists.items():
+                if isinstance(outputs_list, dict):
+                    outputs_dict[output_name] = {}
+                    for k, v in outputs_list.items():
+                        if isinstance(v, list) and all(torch.is_tensor(vv) for vv in v):
+                            outputs_dict[output_name][k] = torch.cat(v).view(image_height, image_width, -1)
+                        elif isinstance(v, list) and all(isinstance(vv, RaySamples) for vv in v):
+                            # outputs_dict[output_name][k] = RaySamples.cat_samples(v).reshape((image_height, image_width, -1)) # OOM error
+                            # CONSOLE.print("length of ray samples for an image is:", len(v), k, output_name, v[0].shape)
+                            outputs_dict[output_name][k] = v
+                elif isinstance(outputs_list, list):
+                    if torch.is_tensor(outputs_list[0]):
+                        outputs_dict[output_name] = torch.cat(outputs_list).view(image_height, image_width, -1)  # type: ignore
+                    elif isinstance(outputs_list[0], list):
+                        outputs_dict[output_name] =[torch.cat(out).view(image_height, image_width, -1) for out in outputs_list]  # type: ignore
+                    else:
+                        raise NotImplementedError
+                else:
+                    raise NotImplementedError
+                
+            outputs_dict["ray_bundle"] = camera_ray_bundle
+                        
             all_outputs.append(outputs_dict)
         
         return all_outputs
+    
+    
     @torch.no_grad()
     def get_image_metrics_and_images_loop(
         self, 
@@ -355,7 +376,6 @@ class cIMLEModel(Model):
         ray_bundle: Optional[RayBundle] = None
         for n, outputs in enumerate(all_outputs):
             metrics_dict, images_dict, ground_truth_dict, weights_dict, samples_dict = eval_func(outputs, batch)
-            print(outputs.keys())
             ray_bundle = outputs["ray_bundle"]
             if weights_dict is not None:
                 for k, v in weights_dict.items():
@@ -378,24 +398,42 @@ class cIMLEModel(Model):
                 assert len(weights_list_dict[k]) == len(samples_list_dict[k]) == len(all_outputs)
                 samples_list = samples_list_dict[k]
                 weights_list = weights_list_dict[k]
-                new_samples_list = []
-                for i in range(len(samples_list)):
-                    new_samples_list.append(self.pdf_sampler(ray_bundle, samples_list[i], weights_list[i]))
-                pairwise_diff = self.distribution_distance(new_samples_list)
-                distribution_diff_map[f"{k}/distribution_variance"] = pairwise_diff
-            all_metrics_dict.update(distribution_diff_map)
+                num_rays_per_chunk = self.config.eval_num_rays_per_chunk
+                image_height, image_width, n_samples = weights_list[0].shape[:3]
+                num_rays = image_height * image_width
+                all_pairwise_diff_list = []
+                for num, idx in enumerate(range(0, num_rays, num_rays_per_chunk)):
+                    new_samples_list = []
+                    for i in range(len(samples_list)):
+                        image_samples_list = samples_list[i]
+                        image_weights = weights_list[i]
+                        start_idx = idx
+                        end_idx = idx + num_rays_per_chunk
+                        chunk_samples: RaySamples = image_samples_list[num]
+                        chunk_weights: Tensor = image_weights.view(-1, n_samples, 1)[start_idx: end_idx]
+                        chunk_ray_bundle: RayBundle = ray_bundle.get_row_major_sliced_ray_bundle(start_idx, end_idx)
+                        # print(num, start_idx, end_idx, chunk_samples.shape, chunk_weights.shape[0], chunk_ray_bundle.shape)
+                        assert chunk_samples.shape[0] == chunk_weights.shape[0] == chunk_ray_bundle.shape[0]
+                        new_samples = self.pdf_sampler(chunk_ray_bundle, chunk_samples, chunk_weights)
+                        # print(new_samples.shape)
+                        new_samples_list.append(new_samples)
+                    pairwise_diff = self.distribution_distance(new_samples_list).detach().cpu()
+                    # print(pairwise_diff.shape)
+                    all_pairwise_diff_list.append(pairwise_diff)
+                distribution_diff_map[f"{k}/distribution_variance"] = torch.cat(all_pairwise_diff_list).reshape(image_height, image_width, -1)
+            all_images_dict.update(distribution_diff_map)
             
 
-        avg_metrics_dict = {f"{k}": torch.mean(torch.tensor(v)) for k, v in metrics_list_dict.items()}
-        var_metrics_dict = {f"{k}/variance": torch.var(torch.tensor(v)) for k, v in metrics_list_dict.items()}
+        avg_metrics_dict = {f"{k}": torch.mean(torch.tensor(v)).detach().cpu() for k, v in metrics_list_dict.items()}
+        var_metrics_dict = {f"{k}/variance": torch.var(torch.tensor(v)).detach().cpu() for k, v in metrics_list_dict.items()}
         all_metrics_dict.update(avg_metrics_dict)
         all_metrics_dict.update(var_metrics_dict)
         
-        concat_images_dict = {f"{k}/samples": torch.concat(v, dim=1) for k, v in images_list_dict.items()}
-        avg_images_dict = {f"{k}/mean": torch.mean(torch.stack(v, dim=0), dim=0) for k, v in images_list_dict.items()}
+        concat_images_dict = {f"{k}/samples": torch.concat(v, dim=1).detach().cpu() for k, v in images_list_dict.items()}
+        avg_images_dict = {f"{k}/mean": torch.mean(torch.stack(v, dim=0), dim=0).detach().cpu() for k, v in images_list_dict.items()}
         var_images_dict: Dict[str, Tensor] = {}
         for k, v in images_list_dict.items():
-            var_images_dict[f"{k}/variance"] = torch.var(torch.stack(v, dim=0), dim=0)
+            var_images_dict[f"{k}/variance"] = torch.var(torch.stack(v, dim=0).detach().cpu(), dim=0)
             if len(var_images_dict[f"{k}/variance"].shape) == 3:
                 var_images_dict[f"{k}/variance"] = var_images_dict[f"{k}/variance"].mean(-1, keepdim=True)
             all_metrics_dict[f"{k}/max_var"] = var_images_dict[f"{k}/variance"].max()
