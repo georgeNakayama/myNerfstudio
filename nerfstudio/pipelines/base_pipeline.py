@@ -371,6 +371,7 @@ class VanillaPipeline(Pipeline):
 
 
     @profiler.time_function
+    @torch.no_grad()
     def get_average_test_images_and_metrics(self, step: Optional[int] = None) -> Tuple[Dict[str, Union[Tensor, float]], Dict[str, Tensor]]:
         """Iterate over all the images in the eval dataset and get the average.
 
@@ -399,6 +400,8 @@ class VanillaPipeline(Pipeline):
                     outputs = self.model.get_outputs_for_camera_ray_bundle(camera_ray_bundle)
                     metrics_dict, images_dict = self.model.get_image_metrics_and_images(outputs, batch)
                     for k, v in images_dict.items():
+                        if torch.is_tensor(v):
+                            v = v.detach().cpu()
                         total_image_dict[f"{k}_{i}"] = v
                     assert "num_rays_per_sec" not in metrics_dict
                     metrics_dict["num_rays_per_sec"] = num_rays / (time() - inner_start)
@@ -417,6 +420,7 @@ class VanillaPipeline(Pipeline):
         return metrics_dict, total_image_dict
 
     @profiler.time_function
+    @torch.no_grad()
     def get_average_eval_image_metrics(self, step: Optional[int] = None) -> Dict[str, Union[Tensor, float]]:
         """Iterate over all the images in the eval dataset and get the average.
 

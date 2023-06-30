@@ -17,7 +17,7 @@ Some ray datastructures.
 """
 import random
 from dataclasses import dataclass, field
-from typing import Callable, Dict, Literal, Optional, Tuple, Union, overload
+from typing import Callable, Dict, Literal, Optional, Tuple, Union, overload, List
 
 import torch
 from jaxtyping import Float, Int, Shaped
@@ -101,6 +101,19 @@ class Frustums(TensorDataclass):
             ends=torch.ones((1, 1)).to(device),
             pixel_area=torch.ones((1, 1)).to(device),
         )
+    
+    @classmethod
+    def cat_frustums(cls, frustums_list: List["Frustums"]) -> "Frustums":
+        first_sample = frustums_list[0]
+        combined_frustums = Frustums(
+            origins=torch.cat([vv.origins for vv in frustums_list]),
+            ends=torch.cat([vv.ends for vv in frustums_list]),
+            directions=torch.cat([vv.directions for vv in frustums_list]),
+            starts=torch.cat([vv.starts for vv in frustums_list]),
+            pixel_area=torch.cat([vv.pixel_area for vv in frustums_list]),
+            offsets=torch.cat([vv.offsets for vv in frustums_list]) if first_sample.offsets is not None else None
+        )
+        return combined_frustums
 
 
 @dataclass
@@ -124,6 +137,8 @@ class RaySamples(TensorDataclass):
 
     times: Optional[Float[Tensor, "*batch 1"]] = None
     """Times at which rays are sampled"""
+
+    
 
     def get_weights(self, densities: Float[Tensor, "*batch num_samples 1"]) -> Float[Tensor, "*batch num_samples 1"]:
         """Return weights based on predicted densities
@@ -186,7 +201,29 @@ class RaySamples(TensorDataclass):
         if weights_only:
             return weights
         return weights, transmittance
-
+    
+    @classmethod
+    def cat_samples(cls, ray_samples_list:List["RaySamples"]) -> "RaySamples":
+        first_sample = ray_samples_list[0]
+        combined_frustums = Frustums.cat_frustums([ray_samples.frustums for ray_samples in ray_samples_list])
+        combined_metadata: Optional[Dict[str, Shaped[Tensor, "*bs latent_dims"]]] = None
+        if first_sample.metadata is not None: 
+            combined_metadata = {}
+            for k in ray_samples_list[0].metadata.keys():
+                combined_metadata[k] = torch.cat([vv.metadata[k] for vv in ray_samples_list])
+        combined_sample = RaySamples(
+            frustums=combined_frustums,
+            metadata=combined_metadata,
+            camera_indices = torch.cat([vv.camera_indices for vv in ray_samples_list]) if first_sample.camera_indices is not None else None,
+            deltas = torch.cat([vv.deltas for vv in ray_samples_list]) if first_sample.deltas is not None else None,
+            spacing_starts = torch.cat([vv.spacing_starts for vv in ray_samples_list]) if first_sample.spacing_starts is not None else None,
+            spacing_ends = torch.cat([vv.spacing_ends for vv in ray_samples_list]) if first_sample.spacing_ends is not None else None,
+            times = torch.cat([vv.times for vv in ray_samples_list]) if first_sample.times is not None else None,
+            spacing_to_euclidean_fn=first_sample.spacing_to_euclidean_fn,
+        )
+        return combined_sample
+    
+        
 
 @dataclass
 class RayBundle(TensorDataclass):

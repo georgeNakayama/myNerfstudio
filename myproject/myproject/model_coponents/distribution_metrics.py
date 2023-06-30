@@ -14,16 +14,14 @@ class BasePairWiseDistance(nn.Module):
     def forward(self, sample_list: List[RaySamples]):
         all_dists = []
         for s1, s2 in combinations(sample_list, 2):
-            dist = self.eval_func(s1, s2)
-            
-            # assert s1.spacing_to_euclidean_fn is not None and s2.spacing_to_euclidean_fn is not None
-            # s1_starts = s1.spacing_to_euclidean_fn(s1.spacing_starts)
-            # s1_ends = s1.spacing_to_euclidean_fn(s1.spacing_ends)
-            # s2_starts = s2.spacing_to_euclidean_fn(s2.spacing_starts)
-            # s2_ends = s2.spacing_to_euclidean_fn(s2.spacing_ends)
-            # s1_medians = (s1_starts + s1_ends) / 2.0
-            # s2_medians = (s2_starts + s2_ends) / 2.0
-            # dist = self.eval_func(s1_medians, s2_medians)
+            assert s1.spacing_to_euclidean_fn is not None and s2.spacing_to_euclidean_fn is not None
+            s1_starts = s1.spacing_to_euclidean_fn(s1.spacing_starts[..., 0])
+            s1_ends = s1.spacing_to_euclidean_fn(s1.spacing_ends[..., 0])
+            s2_starts = s2.spacing_to_euclidean_fn(s2.spacing_starts[..., 0])
+            s2_ends = s2.spacing_to_euclidean_fn(s2.spacing_ends[..., 0])
+            s1_medians = (s1_starts + s1_ends) / 2.0
+            s2_medians = (s2_starts + s2_ends) / 2.0
+            dist = self.eval_func(s1_medians[..., None], s2_medians[..., None])
             all_dists.append(dist)
         all_dists = torch.stack(all_dists, dim=0)
         if self.reduction == "sum":
