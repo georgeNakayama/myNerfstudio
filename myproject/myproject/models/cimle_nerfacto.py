@@ -193,16 +193,18 @@ class cIMLENerfactoModel(cIMLEModel, NerfactoModel):
     
     
     def get_image_metrics_and_images(
-        self, all_outputs: List[Dict[str, torch.Tensor]], batch: Dict[str, torch.Tensor]
+        self, all_outputs: List[Dict[str, Any]], batch: Dict[str, torch.Tensor]
     ) -> Tuple[Dict[str, float], Dict[str, torch.Tensor]]:
         
         def _get_image_metrics_and_images(
-            outputs: Dict[str, torch.Tensor], _batch: Dict[str, torch.Tensor]
-        ) -> Tuple[Dict[str, float], Dict[str, torch.Tensor], Dict[str, torch.Tensor]]:
-            image = _batch["image"].to(self.device)
-            rgb = outputs["rgb"]
-            acc = outputs["accumulation"]
-            depth = outputs["depth"]
+            outputs: Dict[str, Any], _batch: Dict[str, torch.Tensor]
+        ) -> Tuple[Dict[str, float], Dict[str, torch.Tensor], Dict[str, torch.Tensor], Optional[Dict[str, torch.Tensor]], Optional[Dict[str, torch.Tensor]]]:
+            image: torch.Tensor = _batch["image"].to(self.device)
+            rgb: torch.Tensor = outputs["rgb"]
+            acc: torch.Tensor = outputs["accumulation"]
+            depth: torch.Tensor = outputs["depth"]
+            weights_list: Optional[Dict[str, torch.Tensor]] = outputs.get("weights_dict", None)
+            ray_samples_list: Optional[Dict[str, torch.Tensor]] = outputs.get("ray_samples_dict", None)
 
 
             # Switch images from [H, W, C] to [1, C, H, W] for metrics computations
@@ -222,7 +224,7 @@ class cIMLENerfactoModel(cIMLEModel, NerfactoModel):
             images_dict.update({f"prop_depth_{i}": outputs[f"prop_depth_{i}"] for i in range(self.config.num_proposal_iterations)})
             metrics_dict.update({f"max_prop_depth_{i}": float(torch.max(outputs[f"prop_depth_{i}"])) for i in range(self.config.num_proposal_iterations)})
             metrics_dict.update({f"min_prop_depth_{i}": float(torch.min(outputs[f"prop_depth_{i}"])) for i in range(self.config.num_proposal_iterations)})
-            return metrics_dict, images_dict, {"img": image[0].moveaxis(0, -1)}
+            return metrics_dict, images_dict, {"img": image[0].moveaxis(0, -1)}, weights_list, ray_samples_list
         
         all_metrics_dict, all_images_dict = self.get_image_metrics_and_images_loop(_get_image_metrics_and_images, all_outputs, batch)
         
