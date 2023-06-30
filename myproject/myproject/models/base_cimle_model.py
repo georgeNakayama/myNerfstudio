@@ -40,8 +40,8 @@ from nerfstudio.utils.rich_utils import CONSOLE
 from nerfstudio.data.scene_box import SceneBox
 from nerfstudio.engine.callbacks import TrainingCallback, TrainingCallbackAttributes, TrainingCallbackLocation
 from nerfstudio.data.datamanagers.base_datamanager import  VanillaDataManager
-from nerfstudio.utils import model_context_manager
-
+from nerfstudio.model_components.ray_samplers import PDFSampler
+from myproject.model_coponents.distribution_metrics import ChamferPairWiseDistance
 # Model related configs
 @dataclass
 class cIMLEModelConfig(ModelConfig):
@@ -71,7 +71,11 @@ class cIMLEModelConfig(ModelConfig):
     """Specifies whether it is pretraining"""
     cimle_type: Literal["per_view", "per_scene"] = "per_view"
     """Specifies the type of cIMLE sampling to be used"""
-    
+    compute_distribution_diff: bool=False 
+    """Specifies whether to compute distribution difference"""
+    num_points_sample: int=256
+    """Specifices the number of points to sample when computing distribution difference"""
+    distribution_metric: Literal["chamfer"] = "chamfer"
 
 
 class cIMLEModel(Model):
@@ -102,6 +106,10 @@ class cIMLEModel(Model):
         self.cimle_injection_type=self.config.cimle_injection_type
         self.cimle_latents: nn.Embedding = nn.Embedding.from_pretrained(torch.zeros([num_train_data, self.cimle_ch]), freeze=True)
         self.cimle_cached_samples: Optional[Tensor] = None
+        self.pdf_sampler = PDFSampler(num_samples=self.config.num_points_sample, train_stratified=False)
+        self.distribution_distance: Optional[nn.Module] = None
+        if self.config.distribution_metric == "chamfer":
+            self.distribution_distance = ChamferPairWiseDistance(reduction="none")
 
     def get_training_callbacks(
         self, training_callback_attributes: TrainingCallbackAttributes
@@ -330,11 +338,11 @@ class cIMLEModel(Model):
             all_outputs.append(outputs_dict)
         
         return all_outputs
-    
+    @torch.no_grad()
     def get_image_metrics_and_images_loop(
         self, 
-        eval_func: Callable[..., Tuple[Dict[str, float], Dict[str, Tensor], Dict[str, Tensor]]], 
-        all_outputs: List[Dict[str, Tensor]], 
+        eval_func: Callable[..., Tuple[Dict[str, float], Dict[str, Tensor], Dict[str, Tensor], Optional[Dict[str, torch.Tensor]], Optional[Dict[str, torch.Tensor]]]], 
+        all_outputs: List[Dict[str, Any]], 
         batch: Dict[str, Tensor]
     ) -> Tuple[Dict[str, float], Dict[str, Tensor]]:
         all_metrics_dict = {}
@@ -342,13 +350,41 @@ class cIMLEModel(Model):
         images_list_dict = defaultdict(list)
         metrics_list_dict = defaultdict(list)
         ground_truth_dict: Dict[str, Tensor] = {}
+        weights_list_dict = defaultdict(list)
+        samples_list_dict = defaultdict(list)
+        ray_bundle: Optional[RayBundle] = None
         for n, outputs in enumerate(all_outputs):
-            metrics_dict, images_dict, ground_truth_dict = eval_func(outputs, batch)
+            metrics_dict, images_dict, ground_truth_dict, weights_dict, samples_dict = eval_func(outputs, batch)
+            print(outputs.keys())
+            ray_bundle = outputs["ray_bundle"]
+            if weights_dict is not None:
+                for k, v in weights_dict.items():
+                    weights_list_dict[k].append(v)
+                    
+            if samples_dict is not None:
+                for k, v in samples_dict.items():
+                    samples_list_dict[k].append(v)
+                
             for k, v in metrics_dict.items():
                 metrics_list_dict[k].append(v)
                 all_metrics_dict[f"{k}/sample_{n}"] = v
             for k, v in images_dict.items():
                 images_list_dict[k].append(v)
+                
+        if self.config.compute_distribution_diff:
+            assert ray_bundle is not None and self.distribution_distance is not None
+            distribution_diff_map: Dict[str, torch.Tensor] = {}
+            for k in weights_list_dict.keys():
+                assert len(weights_list_dict[k]) == len(samples_list_dict[k]) == len(all_outputs)
+                samples_list = samples_list_dict[k]
+                weights_list = weights_list_dict[k]
+                new_samples_list = []
+                for i in range(len(samples_list)):
+                    new_samples_list.append(self.pdf_sampler(ray_bundle, samples_list[i], weights_list[i]))
+                pairwise_diff = self.distribution_distance(new_samples_list)
+                distribution_diff_map[f"{k}/distribution_variance"] = pairwise_diff
+            all_metrics_dict.update(distribution_diff_map)
+            
 
         avg_metrics_dict = {f"{k}": torch.mean(torch.tensor(v)) for k, v in metrics_list_dict.items()}
         var_metrics_dict = {f"{k}/variance": torch.var(torch.tensor(v)) for k, v in metrics_list_dict.items()}

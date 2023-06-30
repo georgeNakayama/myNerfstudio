@@ -317,6 +317,10 @@ class NerfactoModel(Model):
 
         for i in range(self.config.num_proposal_iterations):
             outputs[f"prop_depth_{i}"] = self.renderer_depth(weights=weights_list[i], ray_samples=ray_samples_list[i])
+            
+        outputs["weights_dict"] = dict(zip([f"prop_depth_{i}" for i in range(self.config.num_proposal_iterations)] + ["depth"], weights_list))
+        outputs["ray_samples_dict"] = dict(zip([f"prop_depth_{i}" for i in range(self.config.num_proposal_iterations)] + ["depth"], ray_samples_list))
+        outputs["ray_bundle"] = ray_bundle
 
         return outputs
 
