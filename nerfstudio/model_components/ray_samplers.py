@@ -266,12 +266,14 @@ class PDFSampler(Sampler):
         single_jitter: bool = False,
         include_original: bool = True,
         histogram_padding: float = 0.01,
+        add_end_bin: bool = False
     ) -> None:
         super().__init__(num_samples=num_samples)
         self.train_stratified = train_stratified
         self.include_original = include_original
         self.histogram_padding = histogram_padding
         self.single_jitter = single_jitter
+        self.add_end_bin=add_end_bin
 
     def generate_ray_samples(
         self,
@@ -309,11 +311,11 @@ class PDFSampler(Sampler):
         padding = torch.relu(eps - weights_sum)
         weights = weights + padding / weights.shape[-1]
         weights_sum += padding
-
-        pdf = weights / weights_sum
+        if self.add_end_bin:
+            weights = torch.cat([weights, torch.relu(1 - weights_sum)], dim=-1)
+        pdf = weights / weights.sum(dim=-1, keepdim=True)
         cdf = torch.min(torch.ones_like(pdf), torch.cumsum(pdf, dim=-1))
         cdf = torch.cat([torch.zeros_like(cdf[..., :1]), cdf], dim=-1)
-
         if self.train_stratified and self.training:
             # Stratified samples between 0 and 1
             u = torch.linspace(0.0, 1.0 - (1.0 / num_bins), steps=num_bins, device=cdf.device)
@@ -334,14 +336,23 @@ class PDFSampler(Sampler):
             ray_samples.spacing_starts is not None and ray_samples.spacing_ends is not None
         ), "ray_sample spacing_starts and spacing_ends must be provided"
         assert ray_samples.spacing_to_euclidean_fn is not None, "ray_samples.spacing_to_euclidean_fn must be provided"
-        existing_bins = torch.cat(
-            [
-                ray_samples.spacing_starts[..., 0],
-                ray_samples.spacing_ends[..., -1:, 0],
-            ],
-            dim=-1,
-        )
-
+        if self.add_end_bin:
+            existing_bins = torch.cat(
+                [
+                    ray_samples.spacing_starts[..., 0],
+                    ray_samples.spacing_ends[..., -1:, 0],
+                    torch.ones_like(ray_samples.spacing_starts[..., :1, 0])
+                ],
+                dim=-1,
+            )
+        else:
+            existing_bins = torch.cat(
+                [
+                    ray_samples.spacing_starts[..., 0],
+                    ray_samples.spacing_ends[..., -1:, 0],
+                ],
+                dim=-1,
+            )
         inds = torch.searchsorted(cdf, u, side="right")
         below = torch.clamp(inds - 1, 0, existing_bins.shape[-1] - 1)
         above = torch.clamp(inds, 0, existing_bins.shape[-1] - 1)
@@ -368,7 +379,6 @@ class PDFSampler(Sampler):
             spacing_ends=bins[..., 1:, None],
             spacing_to_euclidean_fn=ray_samples.spacing_to_euclidean_fn,
         )
-
         return ray_samples
 
 
@@ -540,6 +550,7 @@ class ProposalNetworkSampler(Sampler):
         single_jitter: bool = False,
         update_sched: Callable = lambda x: 1,
         initial_sampler: Optional[Sampler] = None,
+        add_end_bin: bool = True
     ) -> None:
         super().__init__()
         self.num_proposal_samples_per_ray = num_proposal_samples_per_ray
@@ -554,7 +565,7 @@ class ProposalNetworkSampler(Sampler):
             self.initial_sampler = UniformLinDispPiecewiseSampler(single_jitter=single_jitter)
         else:
             self.initial_sampler = initial_sampler
-        self.pdf_sampler = PDFSampler(include_original=False, single_jitter=single_jitter)
+        self.pdf_sampler = PDFSampler(include_original=False, single_jitter=single_jitter, add_end_bin=add_end_bin)
 
         self._anneal = 1.0
         self._steps_since_update = 0

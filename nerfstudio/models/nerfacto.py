@@ -113,7 +113,7 @@ class NerfactoModelConfig(ModelConfig):
     appearance_embedding_dim: int = 32
     """appearance embedding dimension. 0 to turn it off"""
     proposal_weights_anneal_slope: float = 10.0
-    """Slope of the annealing function for the proposal weights."""
+    """Slope of the annealing function for the proposal weights. Negative to turn it off"""
     proposal_weights_anneal_max_num_iters: int = 1000
     """Max num iterations for the annealing function."""
     use_single_jitter: bool = True
@@ -128,6 +128,9 @@ class NerfactoModelConfig(ModelConfig):
     """Which implementation to use for the model."""
     depth_method: Literal["expected", "median"] = "median"
     """Which depth map rendering method to use."""
+    add_end_bin: bool = False 
+    """Specifies whether to add an ending bin to each ray's samples."""
+
 
 class NerfactoModel(Model):
     """Nerfacto model
@@ -162,7 +165,6 @@ class NerfactoModel(Model):
             use_pred_normals=self.config.predict_normals,
             appearance_embedding_dim=self.config.appearance_embedding_dim,
             use_average_appearance_embedding=self.config.use_average_appearance_embedding,
-            appearance_embedding_dim=self.config.appearance_embed_dim,
             implementation=self.config.implementation,
         )
 
@@ -213,6 +215,7 @@ class NerfactoModel(Model):
             single_jitter=self.config.use_single_jitter,
             update_sched=update_schedule,
             initial_sampler=initial_sampler,
+            add_end_bin=self.config.add_end_bin
         )
 
         # Collider
@@ -256,6 +259,8 @@ class NerfactoModel(Model):
                 self.step = step
 
                 def bias(x, b):
+                    if b < 0:
+                        return 1.0
                     return b * x / ((b - 1) * x + 1)
 
                 anneal = bias(train_frac, self.config.proposal_weights_anneal_slope)
@@ -291,14 +296,12 @@ class NerfactoModel(Model):
         rgb = self.renderer_rgb(rgb=field_outputs[FieldHeadNames.RGB], weights=weights)
         with torch.no_grad():
             depth = self.renderer_depth(weights=weights, ray_samples=ray_samples)
-        expected_depth = self.renderer_expected_depth(weights=weights, ray_samples=ray_samples)
         accumulation = self.renderer_accumulation(weights=weights)
 
         outputs = {
             "rgb": rgb,
             "accumulation": accumulation,
             "depth": depth,
-            "expected_depth": expected_depth,
         }
 
         if self.config.predict_normals:

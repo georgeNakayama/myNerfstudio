@@ -16,6 +16,8 @@ class BasePairWiseDistance(nn.Module):
         all_dists = []
         for s1, s2 in combinations(sample_list, 2):
             assert s1.spacing_to_euclidean_fn is not None and s2.spacing_to_euclidean_fn is not None
+            assert s1.spacing_starts is not None and s1.spacing_ends is not None 
+            assert s2.spacing_starts is not None and s2.spacing_ends is not None 
             s1_starts = s1.spacing_to_euclidean_fn(s1.spacing_starts[..., 0])
             s1_ends = s1.spacing_to_euclidean_fn(s1.spacing_ends[..., 0])
             s2_starts = s2.spacing_to_euclidean_fn(s2.spacing_starts[..., 0])
@@ -39,7 +41,7 @@ class BasePairWiseDistance(nn.Module):
         return return_list
     
 class ChamferPairWiseDistance(BasePairWiseDistance):
-    def __init__(self, reduction: Literal['sum', 'mean', 'none'] = "mean"):
+    def __init__(self, reduction: Optional[List[Literal['sum', 'mean', 'max']]] = ["mean"]):
         chamfer = ChamferDistance()
         def eval_func(x, y):
             return chamfer(x, y, bidirectional=True, reduction=None)
