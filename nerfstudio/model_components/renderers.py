@@ -100,6 +100,7 @@ class RGBRenderer(nn.Module):
         else:
             comp_rgb = torch.sum(weights * rgb, dim=-2)
             accumulated_weight = torch.sum(weights, dim=-2)
+            # print("fine nerf: ", accumulated_weight.min(), accumulated_weight.max())
 
         if BACKGROUND_COLOR_OVERRIDE is not None:
             background_color = BACKGROUND_COLOR_OVERRIDE

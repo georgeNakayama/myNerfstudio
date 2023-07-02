@@ -111,7 +111,7 @@ class NerfactoModelConfig(ModelConfig):
     use_average_appearance_embedding: bool = True
     """Whether to use average appearance embedding or zeros for inference."""
     proposal_weights_anneal_slope: float = 10.0
-    """Slope of the annealing function for the proposal weights."""
+    """Slope of the annealing function for the proposal weights. Negative to turn it off"""
     proposal_weights_anneal_max_num_iters: int = 1000
     """Max num iterations for the annealing function."""
     use_single_jitter: bool = True
@@ -128,6 +128,8 @@ class NerfactoModelConfig(ModelConfig):
     """Which depth map rendering method to use."""
     appearance_embed_dim: int = 32
     """Dimension of the appearance embedding."""
+    add_end_bin: bool = False 
+    """Specifies whether to add an ending bin to each ray's samples."""
 
 
 class NerfactoModel(Model):
@@ -211,6 +213,7 @@ class NerfactoModel(Model):
             single_jitter=self.config.use_single_jitter,
             update_sched=update_schedule,
             initial_sampler=initial_sampler,
+            add_end_bin=self.config.add_end_bin
         )
 
         # Collider
@@ -252,6 +255,8 @@ class NerfactoModel(Model):
                 train_frac = np.clip(step / N, 0, 1)
 
                 def bias(x, b):
+                    if b < 0:
+                        return 1.0
                     return b * x / ((b - 1) * x + 1)
 
                 anneal = bias(train_frac, self.config.proposal_weights_anneal_slope)

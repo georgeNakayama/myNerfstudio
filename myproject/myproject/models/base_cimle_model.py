@@ -34,7 +34,7 @@ from rich.progress import (
     TextColumn,
     TimeElapsedColumn,
 )
-from nerfstudio.cameras.rays import RayBundle, RaySamples, Frustums
+from nerfstudio.cameras.rays import RayBundle, RaySamples
 from nerfstudio.models.base_model import ModelConfig, Model
 from nerfstudio.utils.rich_utils import CONSOLE
 from nerfstudio.data.scene_box import SceneBox
@@ -107,7 +107,7 @@ class cIMLEModel(Model):
         self.cimle_injection_type=self.config.cimle_injection_type
         self.cimle_latents: nn.Embedding = nn.Embedding.from_pretrained(torch.zeros([num_train_data, self.cimle_ch]), freeze=True)
         self.cimle_cached_samples: Optional[Tensor] = None
-        self.pdf_sampler = PDFSampler(num_samples=self.config.num_points_sample, train_stratified=False)
+        self.pdf_sampler = PDFSampler(num_samples=self.config.num_points_sample, train_stratified=False, add_end_bin=True)
         self.distribution_distance: Optional[nn.Module] = None
         if self.config.distribution_metric == "chamfer":
             self.distribution_distance = ChamferPairWiseDistance(reduction=["mean", "max"])
@@ -322,7 +322,7 @@ class cIMLEModel(Model):
             image_height, image_width = camera_ray_bundle.origins.shape[:2]
             num_rays = len(camera_ray_bundle)
             camera_ray_bundle.metadata["cimle_latent"] = _z.reshape(1, 1, self.cimle_ch).expand(image_height, image_width, -1)
-            outputs_dict: Dict[str, Union[torch.Tensor, List[Tensor], Dict[str, Tensor], RayBundle]] = {}
+            outputs_dict: Dict[str, Any] = {}
             outputs_lists = defaultdict(list)
             for i in range(0, num_rays, num_rays_per_chunk):
                 start_idx = i
@@ -362,17 +362,17 @@ class cIMLEModel(Model):
     @torch.no_grad()
     def get_image_metrics_and_images_loop(
         self, 
-        eval_func: Callable[..., Tuple[Dict[str, float], Dict[str, Tensor], Dict[str, Tensor], Optional[Dict[str, torch.Tensor]], Optional[Dict[str, torch.Tensor]]]], 
+        eval_func: Callable[..., Tuple[Dict[str, float], Dict[str, Tensor], Dict[str, Tensor], Optional[Dict[str, torch.Tensor]], Optional[Dict[str, RaySamples]]]], 
         all_outputs: List[Dict[str, Any]], 
         batch: Dict[str, Tensor]
     ) -> Tuple[Dict[str, float], Dict[str, Tensor]]:
         all_metrics_dict = {}
         all_images_dict = {}
-        images_list_dict = defaultdict(list)
-        metrics_list_dict = defaultdict(list)
+        images_list_dict: Dict[str, List[Tensor]] = defaultdict(list)
+        metrics_list_dict: Dict[str, List[float]] = defaultdict(list)
         ground_truth_dict: Dict[str, Tensor] = {}
-        weights_list_dict = defaultdict(list)
-        samples_list_dict = defaultdict(list)
+        weights_list_dict: Dict[str, List[Tensor]] = defaultdict(list)
+        samples_list_dict: Dict[str, List[RaySamples]] = defaultdict(list)
         ray_bundle: Optional[RayBundle] = None
         for n, outputs in enumerate(all_outputs):
             metrics_dict, images_dict, ground_truth_dict, weights_dict, samples_dict = eval_func(outputs, batch)
