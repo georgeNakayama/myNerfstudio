@@ -144,7 +144,7 @@ class Model(nn.Module):
         if self.collider is not None:
             ray_bundle = self.collider(ray_bundle)
 
-        return self.get_outputs(ray_bundle)
+        return self.get_outputs(ray_bundle, **kwargs)
 
     def get_metrics_dict(self, outputs, batch) -> Dict[str, torch.Tensor]:
         """Compute and returns metrics.
