@@ -44,7 +44,7 @@ from nerfstudio.model_components.losses import (
 )
 from nerfstudio.model_components.ray_samplers import ProposalNetworkSampler, UniformSampler
 from nerfstudio.model_components.renderers import AccumulationRenderer, DepthRenderer, NormalsRenderer, RGBRenderer
-from nerfstudio.model_components.scene_colliders import NearFarCollider
+from nerfstudio.model_components.scene_colliders import NearFarCollider, AABBBoxCollider
 from nerfstudio.model_components.shaders import NormalsShader
 from nerfstudio.models.base_model import Model, ModelConfig
 from nerfstudio.utils import colormaps
@@ -130,6 +130,8 @@ class NerfactoModelConfig(ModelConfig):
     """Dimension of the appearance embedding."""
     add_end_bin: bool = False 
     """Specifies whether to add an ending bin to each ray's samples."""
+    use_aabb_collider: bool = False
+    """Specifies whether to use aabb collider instead of near and far collider"""
 
 
 class NerfactoModel(Model):
@@ -217,7 +219,10 @@ class NerfactoModel(Model):
         )
 
         # Collider
-        self.collider = NearFarCollider(near_plane=self.config.near_plane, far_plane=self.config.far_plane)
+        if self.config.use_aabb_collider:
+            self.collider = AABBBoxCollider(near_plane=self.config.near_plane, scene_box=self.scene_box)
+        else:
+            self.collider = NearFarCollider(near_plane=self.config.near_plane, far_plane=self.config.far_plane)
 
         # renderers
         self.renderer_rgb = RGBRenderer(background_color=self.config.background_color)
