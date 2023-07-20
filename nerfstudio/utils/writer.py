@@ -64,6 +64,7 @@ class EventType(enum.Enum):
     """Possible Event types and their associated write function"""
 
     IMAGE = "write_image"
+    IMAGES = "write_images"
     SCALAR = "write_scalar"
     TABLE = "write_table"
     DICT = "write_scalar_dict"
@@ -71,7 +72,7 @@ class EventType(enum.Enum):
 
 
 @check_main_thread
-def put_image(name, image: Float[Tensor, "H W C"], step: int):
+def put_image(name, image: Union[Float[Tensor, "H W C"], Float[Tensor, "B H W C"]], step: int):
     """Setter function to place images into the queue to be written out
 
     Args:
@@ -80,8 +81,18 @@ def put_image(name, image: Float[Tensor, "H W C"], step: int):
     """
     if isinstance(name, EventName):
         name = name.value
+    EVENT_STORAGE.append({"name": name, "write_type": EventType.IMAGE if image.ndim == 3 else EventType.IMAGES, "event": image.detach().cpu(), "step": step})
+    
+    
+@check_main_thread
+def put_images(name, image: Float[Tensor, "B H W C"], step: int):
+    """Setter function to place images into the queue to be written out
 
-    EVENT_STORAGE.append({"name": name, "write_type": EventType.IMAGE, "event": image.detach().cpu(), "step": step})
+    Args:
+        image: image to write out
+        step: step associated with image
+    """
+    put_image(name, image, step)
 
 
 @check_main_thread
@@ -244,6 +255,17 @@ class Writer:
             step: the time step to log
         """
         raise NotImplementedError
+    
+    @abstractmethod
+    def write_images(self, name: str, image: Float[Tensor, "B H W C"], step: int) -> None:
+        """method to write out image
+
+        Args:
+            name: data identifier
+            image: rendered image to write
+            step: the time step to log
+        """
+        raise NotImplementedError
 
     @abstractmethod
     def write_scalar(self, name: str, scalar: Union[float, torch.Tensor], step: int) -> None:
@@ -312,6 +334,10 @@ class WandbWriter(Writer):
     def write_image(self, name: str, image: Float[Tensor, "H W C"], step: int) -> None:
         image = torch.permute(image, (2, 0, 1))
         wandb.log({name: wandb.Image(image)}, step=step)
+        
+    def write_images(self, name: str, images: Float[Tensor, "B H W C"], step: int) -> None:
+        images = torch.permute(images, (0, 3, 1, 2))
+        wandb.log({name: [wandb.Image(images[i]) for i in range(images.shape[0])]}, step=step)
 
     def write_scalar(self, name: str, scalar: Union[float, torch.Tensor], step: int) -> None:
         wandb.log({name: scalar}, step=step)

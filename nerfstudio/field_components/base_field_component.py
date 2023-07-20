@@ -20,7 +20,7 @@ from typing import Optional
 
 from jaxtyping import Shaped
 from torch import Tensor, nn
-
+import torch
 
 class FieldComponent(nn.Module):
     """Field modules that can be combined to store and compute the fields.
@@ -34,6 +34,10 @@ class FieldComponent(nn.Module):
         super().__init__()
         self.in_dim = in_dim
         self.out_dim = out_dim
+        self._device_tracker = nn.Parameter(torch.empty(1))
+    @property
+    def device(self):
+        return self._device_tracker.device
 
     def build_nn_modules(self) -> None:
         """Function instantiates any torch.nn members within the module.

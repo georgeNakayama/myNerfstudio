@@ -17,11 +17,11 @@ Proposal network field.
 """
 
 
-from typing import Literal, Optional, Tuple
+from typing import Literal, Optional, Tuple, Dict
 
 import torch
 from torch import Tensor, nn
-
+from jaxtyping import Shaped
 from nerfstudio.cameras.rays import RaySamples
 from nerfstudio.data.scene_box import SceneBox
 from nerfstudio.field_components.activations import trunc_exp
@@ -30,6 +30,7 @@ from nerfstudio.field_components.mlp import MLP
 from nerfstudio.field_components.spatial_distortions import SpatialDistortion
 from nerfstudio.fields.density_fields import HashMLPDensityField
 from myproject.fields.cimle_field import cIMLEField
+from nerfstudio.cameras.rays import Frustums
 
 
 class cIMLEHashMLPDensityField(HashMLPDensityField):
@@ -58,9 +59,10 @@ class cIMLEHashMLPDensityField(HashMLPDensityField):
         implementation: Literal["tcnn", "torch"] = "torch",
         cimle_ch: int = 32,
         num_layers_cimle: int=1,
-        cimle_injection_type: Literal["add", "concat"]="add",
+        cimle_injection_type: Literal["add", "concat", "cat_linear"]="add",
         cimle_activation: Literal["relu", "none"]="relu",
-        cimle_pretrain: bool = False
+        cimle_pretrain: bool = False,
+        use_cimle_grid: bool = False,
     ) -> None:
         super().__init__(
             aabb,
@@ -77,15 +79,22 @@ class cIMLEHashMLPDensityField(HashMLPDensityField):
             )
         self.cimle = cIMLEField(
             cimle_ch, 
+            self.mlp_base_grid.get_out_dim(),
             num_layers_cimle,
-            cimle_ch if cimle_injection_type == "concat" else self.encoding.get_out_dim(),
             cimle_injection_type,
             cimle_pretrain=cimle_pretrain,
-            cimle_act=cimle_activation
+            cimle_act=cimle_activation,
+            use_cimle_grid=use_cimle_grid,
+            num_levels=num_levels,
+            base_res=base_res,
+            max_res=max_res,
+            log2_hashmap_size=log2_hashmap_size, 
+            features_per_level=features_per_level,
+            implementation=implementation
             )
         if not self.use_linear:
-            network = MLP(
-                in_dim=self.encoding.get_out_dim(),
+            self.mlp_base_mlp = MLP(
+                in_dim=self.cimle.out_dim,
                 num_layers=num_layers,
                 layer_width=hidden_dim,
                 out_dim=1,
@@ -93,9 +102,35 @@ class cIMLEHashMLPDensityField(HashMLPDensityField):
                 out_activation=None,
                 implementation=implementation,
             )
-            self.mlp_base = torch.nn.Sequential(self.encoding, network)
         else:
-            self.linear = torch.nn.Linear(self.encoding.get_out_dim(), 1)
+            self.mlp_base_mlp = torch.nn.Linear(self.cimle.out_dim, 1)
+
+    def density_fn(
+        self, positions: Shaped[Tensor, "*bs 3"], times: Optional[Shaped[Tensor, "*bs 1"]] = None, metadata: Optional[Dict[str, Tensor]] = None
+    ) -> Shaped[Tensor, "*bs 1"]:
+        """Returns only the density. Used primarily with the density grid.
+
+        Args:
+            positions: the origin of the samples/frustums
+        """
+        del times
+        # Need to figure out a better way to describe positions with a ray.
+        metadata_dict = dict() 
+        if metadata is not None and "cimle_latent" in metadata.keys():
+            metadata_dict["cimle_latent"] = metadata["cimle_latent"]
+            
+        ray_samples = RaySamples(
+            frustums=Frustums(
+                origins=positions,
+                directions=torch.ones_like(positions),
+                starts=torch.zeros_like(positions[..., :1]),
+                ends=torch.zeros_like(positions[..., :1]),
+                pixel_area=torch.ones_like(positions[..., :1]),
+            ),
+            metadata=metadata_dict
+        )
+        density, _, metric_dict = self.get_density(ray_samples)
+        return density, metric_dict
 
     def get_density(self, ray_samples: RaySamples) -> Tuple[Tensor, None]:
         if self.spatial_distortion is not None:
@@ -108,19 +143,19 @@ class cIMLEHashMLPDensityField(HashMLPDensityField):
         positions = positions * selector[..., None]
         positions_flat = positions.view(-1, 3)
         
-        x = self.encoding(positions_flat).to(positions)
-        x = self.cimle(ray_samples, x)
+        x = self.mlp_base_grid(positions_flat).to(positions)
+        x, latent_diff = self.cimle(ray_samples, x, positions=positions_flat)
         if not self.use_linear:
             density_before_activation = (
-                self.mlp_base[1](x).view(*ray_samples.frustums.shape, -1).to(positions)
+                self.mlp_base_mlp(x).view(*ray_samples.frustums.shape, -1).to(positions)
             )
         else:
-            density_before_activation = self.linear(x).view(*ray_samples.frustums.shape, -1)
+            density_before_activation = self.mlp_base_mlp(x).view(*ray_samples.frustums.shape, -1)
 
         # Rectifying the density with an exponential is much more stable than a ReLU or
         # softplus, because it enables high post-activation (float32) density outputs
         # from smaller internal (float16) parameters.
         density = trunc_exp(density_before_activation)
         density = density * selector[..., None]
-        return density, None
+        return density, None, {"latent_diff": latent_diff}
 

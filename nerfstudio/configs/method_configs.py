@@ -40,11 +40,12 @@ from nerfstudio.data.dataparsers.sitcoms3d_dataparser import Sitcoms3DDataParser
 from nerfstudio.data.datasets.depth_dataset import DepthDataset
 from nerfstudio.data.datasets.sdf_dataset import SDFDataset
 from nerfstudio.data.datasets.semantic_dataset import SemanticDataset
-from nerfstudio.engine.optimizers import AdamOptimizerConfig, RAdamOptimizerConfig
+from nerfstudio.engine.optimizers import AdamOptimizerConfig, RAdamOptimizerConfig, AdamWOptimizerConfig
 from nerfstudio.engine.schedulers import (
     CosineDecaySchedulerConfig,
     ExponentialDecaySchedulerConfig,
     MultiStepSchedulerConfig,
+    LogDecaySchedulerConfig,
     VanillaNeRFDecaySchedulerConfig
 )
 from nerfstudio.engine.trainer import TrainerConfig
@@ -334,8 +335,12 @@ method_configs["instant-ngp-bounded"] = TrainerConfig(
 
 method_configs["mipnerf"] = TrainerConfig(
     method_name="mipnerf",
+    steps_per_train_image=5000,
+    steps_per_eval_image=5000,
+    steps_per_test_all_images=100000000000000,
+    max_num_iterations=200000,
     pipeline=VanillaPipelineConfig(
-        datamanager=VanillaDataManagerConfig(dataparser=NerfstudioDataParserConfig(), train_num_rays_per_batch=1024),
+        datamanager=VanillaDataManagerConfig(dataparser=NerfstudioDataParserConfig(), train_num_rays_per_batch=4096),
         model=VanillaModelConfig(
             _target=MipNerfModel,
             loss_coefficients={"rgb_loss_coarse": 0.1, "rgb_loss_fine": 1.0},
@@ -346,10 +351,11 @@ method_configs["mipnerf"] = TrainerConfig(
     ),
     optimizers={
         "fields": {
-            "optimizer": RAdamOptimizerConfig(lr=5e-4, eps=1e-08),
-            "scheduler": None,
+            "optimizer": AdamWOptimizerConfig(lr=5e-4, weight_decay=1e-5),
+            "scheduler": LogDecaySchedulerConfig(lr_final=1e-6, lr_delay_steps=2500, lr_delay_mult=0.01, max_steps=1000000),
         }
     },
+    vis="wandb"
 )
 
 method_configs["semantic-nerfw"] = TrainerConfig(

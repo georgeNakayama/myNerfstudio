@@ -67,7 +67,7 @@ class HashMLPDensityField(Field):
         self.register_buffer("num_levels", torch.tensor(num_levels))
         self.register_buffer("log2_hashmap_size", torch.tensor(log2_hashmap_size))
 
-        self.encoding = HashEncoding(
+        self.mlp_base_grid = HashEncoding(
             num_levels=num_levels,
             min_res=base_res,
             max_res=max_res,
@@ -77,8 +77,8 @@ class HashMLPDensityField(Field):
         )
 
         if not self.use_linear:
-            network = MLP(
-                in_dim=self.encoding.get_out_dim(),
+            self.mlp_base_mlp = MLP(
+                in_dim=self.mlp_base_grid.get_out_dim(),
                 num_layers=num_layers,
                 layer_width=hidden_dim,
                 out_dim=1,
@@ -86,9 +86,8 @@ class HashMLPDensityField(Field):
                 out_activation=None,
                 implementation=implementation,
             )
-            self.mlp_base = torch.nn.Sequential(self.encoding, network)
         else:
-            self.linear = torch.nn.Linear(self.encoding.get_out_dim(), 1)
+            self.mlp_base_mlp = torch.nn.Linear(self.mlp_base_grid.get_out_dim(), 1)
 
     def get_density(self, ray_samples: RaySamples) -> Tuple[Tensor, None]:
         if self.spatial_distortion is not None:
@@ -102,11 +101,11 @@ class HashMLPDensityField(Field):
         positions_flat = positions.view(-1, 3)
         if not self.use_linear:
             density_before_activation = (
-                self.mlp_base(positions_flat).view(*ray_samples.frustums.shape, -1).to(positions)
+                self.mlp_base_mlp(self.mlp_base_grid(positions_flat)).view(*ray_samples.frustums.shape, -1).to(positions)
             )
         else:
-            x = self.encoding(positions_flat).to(positions)
-            density_before_activation = self.linear(x).view(*ray_samples.frustums.shape, -1)
+            x = self.mlp_base_grid(positions_flat).to(positions)
+            density_before_activation = self.mlp_base_mlp(x).view(*ray_samples.frustums.shape, -1)
 
         # Rectifying the density with an exponential is much more stable than a ReLU or
         # softplus, because it enables high post-activation (float32) density outputs

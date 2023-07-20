@@ -25,7 +25,7 @@ from torch import Tensor, nn
 from nerfstudio.cameras.rays import RaySamples
 from nerfstudio.field_components.field_heads import FieldHeadNames
 from nerfstudio.utils.math import masked_reduction, normalized_depth_scale_and_shift
-
+from nerfstudio.field_components.activations import trunc_exp
 L1Loss = nn.L1Loss
 MSELoss = nn.MSELoss
 
@@ -121,7 +121,7 @@ def interlevel_loss(weights_list, ray_samples_list) -> torch.Tensor:
         wp = weights[..., 0]  # (num_rays, num_samples)
         loss_interlevel += torch.mean(lossfun_outer(c, w, cp, wp))
 
-    assert isinstance(loss_interlevel, Tensor)
+    assert isinstance(loss_interlevel, Tensor) or isinstance(loss_interlevel, float)
     return loss_interlevel
 
 
@@ -235,8 +235,7 @@ def ds_nerf_depth_loss(
         Depth loss scalar.
     """
     depth_mask = termination_depth > 0
-
-    loss = -torch.log(weights + EPS) * torch.exp(-((steps - termination_depth[:, None]) ** 2) / (2 * sigma)) * lengths
+    loss = -torch.log(weights + EPS) * trunc_exp(-((steps - termination_depth.unsqueeze(-2)) ** 2) / (2 * sigma)) * lengths
     loss = loss.sum(-2) * depth_mask
     return torch.mean(loss)
 

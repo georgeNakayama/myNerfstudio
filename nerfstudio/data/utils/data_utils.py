@@ -80,7 +80,7 @@ def get_depth_image_from_path(
         image = np.load(filepath) * scale_factor
         image = cv2.resize(image, (width, height), interpolation=interpolation)
     else:
-        image = cv2.imread(str(filepath.absolute()), cv2.IMREAD_ANYDEPTH)
+        image = cv2.imread(str(filepath.absolute()), cv2.IMREAD_UNCHANGED)
         image = image.astype(np.float64) * scale_factor
         image = cv2.resize(image, (width, height), interpolation=interpolation)
     return torch.from_numpy(image[:, :, np.newaxis])

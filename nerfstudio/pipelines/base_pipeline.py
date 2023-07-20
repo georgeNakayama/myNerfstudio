@@ -23,7 +23,7 @@ from abc import abstractmethod
 from dataclasses import dataclass, field
 from time import time
 from typing import Any, Dict, List, Literal, Mapping, Optional, Tuple, Type, Union, cast
-
+from collections import defaultdict
 import torch
 from torch import Tensor
 import torch.distributed as dist
@@ -48,7 +48,7 @@ from nerfstudio.data.datamanagers.base_datamanager import (
 )
 from nerfstudio.engine.callbacks import TrainingCallback, TrainingCallbackAttributes, TrainingCallbackLocation
 from nerfstudio.models.base_model import Model, ModelConfig
-from nerfstudio.utils import profiler, model_context_manager
+from nerfstudio.utils import profiler, model_context_manager, misc
 
 
 def module_wrapper(ddp_or_model: Union[DDP, Model]) -> Model:
@@ -123,7 +123,8 @@ class Pipeline(nn.Module):
             model_state = {key[len("module.") :]: value for key, value in model_state.items()}
 
         pipeline_state = {key: value for key, value in state_dict.items() if not key.startswith("_model.")}
-        self.model.load_state_dict(model_state, strict=strict)
+        new_model_state = misc.filter_model_state_dict(self.model.state_dict(), model_state)
+        self.model.load_state_dict(new_model_state, strict=False)
         super().load_state_dict(pipeline_state, strict=False)
 
     @profiler.time_function
@@ -271,7 +272,6 @@ class VanillaPipeline(Pipeline):
             self._model = typing.cast(Model, DDP(self._model, device_ids=[local_rank], find_unused_parameters=True))
             dist.barrier(device_ids=[local_rank])
             
-        print(self)
 
     @property
     def device(self):
@@ -380,7 +380,7 @@ class VanillaPipeline(Pipeline):
         """
         self.eval()
         metrics_dict_list = []
-        total_image_dict = {}
+        total_image_dict = defaultdict(list)
         assert self.datamanager.fixed_indices_test_dataloader is not None
         num_images = len(self.datamanager.fixed_indices_test_dataloader)
         with Progress(
@@ -402,7 +402,7 @@ class VanillaPipeline(Pipeline):
                     for k, v in images_dict.items():
                         if torch.is_tensor(v):
                             v = v.detach().cpu()
-                        total_image_dict[f"{k}_{i}"] = v
+                        total_image_dict[k].append(v)
                     assert "num_rays_per_sec" not in metrics_dict
                     metrics_dict["num_rays_per_sec"] = num_rays / (time() - inner_start)
                     fps_str = "fps"
@@ -414,8 +414,9 @@ class VanillaPipeline(Pipeline):
         metrics_dict = {}
         for key in metrics_dict_list[0].keys():
             metrics_dict[key] = float(
-                torch.mean(torch.tensor([metrics_dict[key] for metrics_dict in metrics_dict_list]))
+                torch.mean(torch.tensor([metrics_dict[key] for metrics_dict in metrics_dict_list])).detach().cpu()
             )
+        total_image_dict = {k: torch.stack(v, dim=0) for k, v in total_image_dict.items()}
         self.train()
         return metrics_dict, total_image_dict
 
@@ -489,15 +490,12 @@ class VanillaPipeline(Pipeline):
             assert self.datamanager.fixed_indices_train_dataloader is not None 
             assert self.datamanager.fixed_indices_eval_dataloader is not None 
             assert self.datamanager.fixed_indices_test_dataloader is not None 
-            all_train_views = [torch.moveaxis(batch['image'], -1, 0) for _, batch in self.datamanager.fixed_indices_train_dataloader]
-            all_val_views = [torch.moveaxis(batch['image'], -1, 0) for _, batch in self.datamanager.fixed_indices_eval_dataloader]
-            all_test_views = [torch.moveaxis(batch['image'], -1, 0) for _, batch in self.datamanager.fixed_indices_test_dataloader]
-            grid_train_im = torchvision.utils.make_grid(all_train_views, nrow=4).moveaxis(0, -1)
-            grid_val_im = torchvision.utils.make_grid(all_val_views, nrow=4).moveaxis(0, -1)
-            grid_test_im = torchvision.utils.make_grid(all_test_views, nrow=4).moveaxis(0, -1)
-            writer.put_image(name="all_train_views", image=grid_train_im, step=step)
-            writer.put_image(name="all_val_views", image=grid_val_im, step=step)
-            writer.put_image(name="all_test_views", image=grid_test_im, step=step)
+            all_train_views = torch.stack([batch['image'] for _, batch in self.datamanager.fixed_indices_train_dataloader], dim=0)
+            all_val_views = torch.stack([batch['image'] for _, batch in self.datamanager.fixed_indices_eval_dataloader], dim=0)
+            all_test_views = torch.stack([batch['image'] for _, batch in self.datamanager.fixed_indices_test_dataloader], dim=0)
+            writer.put_image(name="all_train_views", image=all_train_views, step=step)
+            writer.put_image(name="all_val_views", image=all_val_views, step=step)
+            writer.put_image(name="all_test_views", image=all_test_views, step=step)
         
         save_cb = TrainingCallback([TrainingCallbackLocation.BEFORE_TRAIN], save_all_images)
         callbacks += [save_cb]

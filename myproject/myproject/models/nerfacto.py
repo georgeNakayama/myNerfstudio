@@ -48,11 +48,12 @@ from nerfstudio.model_components.renderers import AccumulationRenderer, DepthRen
 from nerfstudio.model_components.scene_colliders import NearFarCollider, AABBBoxCollider
 from nerfstudio.model_components.shaders import NormalsShader
 from nerfstudio.models.base_model import Model, ModelConfig
+from nerfstudio.models.nerfacto import Nerfa
 from nerfstudio.utils import colormaps
 
 
 @dataclass
-class NerfactoModelConfig(ModelConfig):
+class StochasticNerfactoModelConfig(NerfactoModelConfig):
     """Nerfacto Model Config"""
 
     _target: Type = field(default_factory=lambda: NerfactoModel)

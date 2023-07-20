@@ -65,15 +65,15 @@ class MipNerfModel(Model):
         super().populate_modules()
 
         # setting up fields
-        position_encoding = NeRFEncoding(
+        self.position_encoding = NeRFEncoding(
             in_dim=3, num_frequencies=16, min_freq_exp=0.0, max_freq_exp=16.0, include_input=True
         )
-        direction_encoding = NeRFEncoding(
+        self.direction_encoding = NeRFEncoding(
             in_dim=3, num_frequencies=4, min_freq_exp=0.0, max_freq_exp=4.0, include_input=True
         )
 
         self.field = NeRFField(
-            position_encoding=position_encoding, direction_encoding=direction_encoding, use_integrated_encoding=True
+            position_encoding=self.position_encoding, direction_encoding=self.direction_encoding, use_integrated_encoding=True
         )
 
         # samplers
@@ -100,7 +100,7 @@ class MipNerfModel(Model):
         param_groups["fields"] = list(self.field.parameters())
         return param_groups
 
-    def get_outputs(self, ray_bundle: RayBundle):
+    def get_outputs(self, ray_bundle: RayBundle, **kwargs):
         if self.field is None:
             raise ValueError("populate_fields() must be called before get_outputs")
 

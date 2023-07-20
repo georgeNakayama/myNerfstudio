@@ -17,13 +17,13 @@ Collection of sampling strategies
 """
 
 from abc import abstractmethod
-from typing import Any, Callable, List, Optional, Protocol, Tuple, Union, Dict
+from typing import Any, Callable, List, Optional, Protocol, Tuple, Union, Literal
 
 import torch
 from jaxtyping import Float
 from nerfacc import OccGridEstimator
 from torch import Tensor, nn
-
+from collections import defaultdict
 from nerfstudio.cameras.rays import Frustums, RayBundle, RaySamples
 
 
@@ -79,6 +79,7 @@ class SpacedSampler(Sampler):
         self,
         ray_bundle: Optional[RayBundle] = None,
         num_samples: Optional[int] = None,
+        sample_method: Literal["constant", "piecewise_linear"] = "constant"
     ) -> RaySamples:
         """Generates position samples according to spacing function.
 
@@ -123,6 +124,7 @@ class SpacedSampler(Sampler):
             spacing_starts=bins[..., :-1, None],
             spacing_ends=bins[..., 1:, None],
             spacing_to_euclidean_fn=spacing_to_euclidean_fn,
+            sample_method=sample_method
         )
 
         return ray_samples
@@ -558,8 +560,8 @@ class ProposalNetworkSampler(Sampler):
         self.num_nerf_samples_per_ray = num_nerf_samples_per_ray
         self.num_proposal_network_iterations = num_proposal_network_iterations
         self.update_sched = update_sched
-        if self.num_proposal_network_iterations < 1:
-            raise ValueError("num_proposal_network_iterations must be >= 1")
+        # if self.num_proposal_network_iterations < 1:
+        #     raise ValueError("num_proposal_network_iterations must be >= 1")
 
         # samplers
         if initial_sampler is None:
@@ -592,6 +594,7 @@ class ProposalNetworkSampler(Sampler):
 
         weights_list = []
         ray_samples_list = []
+        metric_dict_list = defaultdict(list)
 
         n = self.num_proposal_network_iterations
         weights = None
@@ -613,10 +616,16 @@ class ProposalNetworkSampler(Sampler):
                 assert ray_samples is not None
                 if updated:
                     # always update on the first step or the inf check in grad scaling crashes
-                    density = density_fns[i_level](ray_samples.frustums.get_positions(), metadata=ray_samples.metadata)
+                    density_outs = density_fns[i_level](ray_samples.frustums.get_positions(), metadata=ray_samples.metadata)
                 else:
                     with torch.no_grad():
-                        density = density_fns[i_level](ray_samples.frustums.get_positions(), metadata=ray_samples.metadata)
+                        density_outs = density_fns[i_level](ray_samples.frustums.get_positions(), metadata=ray_samples.metadata)
+                
+                density = density_outs[0]
+                if len(density_outs) == 2:
+                    assert isinstance(density_outs[1], dict)
+                    for k, v in density_outs[1].items():
+                        metric_dict_list[k].append(v)
                 weights = ray_samples.get_weights(density)
                 weights_list.append(weights)  # (num_rays, num_samples)
                 ray_samples_list.append(ray_samples)
@@ -624,6 +633,8 @@ class ProposalNetworkSampler(Sampler):
             self._steps_since_update = 0
 
         assert ray_samples is not None
+        if len(metric_dict_list.keys()) > 0:
+            return ray_samples, weights_list, ray_samples_list, metric_dict_list
         return ray_samples, weights_list, ray_samples_list
 
 

@@ -31,7 +31,7 @@ Colormaps = Literal["default", "turbo", "viridis", "magma", "inferno", "cividis"
 class ColormapOptions:
     """Options for colormap"""
 
-    colormap: Colormaps = "default"
+    colormap: Colormaps = "gray"
     """ The colormap to use """
     normalize: bool = False
     """ Whether to normalize the input tensor image """

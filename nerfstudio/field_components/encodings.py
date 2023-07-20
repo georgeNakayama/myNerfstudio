@@ -30,7 +30,7 @@ from nerfstudio.field_components.base_field_component import FieldComponent
 from nerfstudio.utils.math import components_from_spherical_harmonics, expected_sin
 from nerfstudio.utils.printing import print_tcnn_speed_warning
 from nerfstudio.utils.rich_utils import CONSOLE
-
+from nerfstudio.field_components.tcnn_encodings import NoGradEncoding
 try:
     import tinycudann as tcnn
 
@@ -267,6 +267,7 @@ class HashEncoding(Encoding):
         hash_init_scale: float = 0.001,
         implementation: Literal["tcnn", "torch"] = "torch",
         interpolation: Optional[Literal["Nearest", "Linear", "Smoothstep"]] = None,
+        no_grad: bool = False
     ) -> None:
         super().__init__(in_dim=3)
         self.num_levels = num_levels
@@ -282,7 +283,8 @@ class HashEncoding(Encoding):
         self.hash_table = torch.rand(size=(self.hash_table_size * num_levels, features_per_level)) * 2 - 1
         # CONSOLE.print(self.hash_table.shape)
         self.hash_table *= hash_init_scale
-        self.hash_table = nn.Parameter(self.hash_table)
+        if not no_grad:
+            self.hash_table = nn.Parameter(self.hash_table)
 
         self.tcnn_encoding = None
         if implementation == "tcnn" and not TCNN_EXISTS:
@@ -298,8 +300,8 @@ class HashEncoding(Encoding):
             }
             if interpolation is not None:
                 encoding_config["interpolation"] = interpolation
-
-            self.tcnn_encoding = tcnn.Encoding(
+            tcnn_encoding = tcnn.Encoding if not no_grad else NoGradEncoding
+            self.tcnn_encoding = tcnn_encoding(
                 n_input_dims=3,
                 encoding_config=encoding_config,
             )
@@ -308,6 +310,19 @@ class HashEncoding(Encoding):
             assert (
                 interpolation is None or interpolation == "Linear"
             ), f"interpolation '{interpolation}' is not supported for torch encoding backend"
+            
+    
+    def load_hash_table_weights(self, weights: Tensor) -> None: 
+        weights = weights.to(self.device)
+        if self.tcnn_encoding is not None:
+            self.tcnn_encoding.params = weights
+        else:
+            self.hash_table = weights
+    
+    def get_hash_table_size(self) -> torch.Size:
+        if self.tcnn_encoding is not None:
+            return self.tcnn_encoding.params.shape
+        return self.hash_table.shape
 
     def get_out_dim(self) -> int:
         return self.num_levels * self.features_per_level

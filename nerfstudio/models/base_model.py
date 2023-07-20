@@ -21,7 +21,7 @@ from __future__ import annotations
 from abc import abstractmethod
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple, Type, Union
+from typing import Any, Dict, List, Optional, Tuple, Type, Union, Literal
 import torch
 from torch import nn
 from torch.nn import Parameter
@@ -50,6 +50,8 @@ class ModelConfig(InstantiateConfig):
     """specifies number of rays per chunk during eval"""
     prompt: Optional[str] = None
     """A prompt to be used in text to NeRF models"""
+    sample_method: Literal["constant", "piecewise_linear"] = "constant"
+    """Specifies whether the sampling method"""
 
 
 class Model(nn.Module):

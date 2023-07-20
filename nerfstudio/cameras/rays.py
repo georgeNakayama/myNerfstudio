@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from typing import Callable, Dict, Literal, Optional, Tuple, Union, overload, List
 
 import torch
+import torch.nn.functional as F
 from jaxtyping import Float, Int, Shaped
 from torch import Tensor
 
@@ -45,6 +46,8 @@ class Frustums(TensorDataclass):
     """Projected area of pixel a distance 1 away from origin."""
     offsets: Optional[Float[Tensor, "*bs 3"]] = None
     """Offsets for each sample position"""
+    spacing_offsets: Optional[Float[Tensor, "*bs 3"]] = None
+    """spacing_offsets for each sample position"""
 
     def get_positions(self) -> Float[Tensor, "*batch 3"]:
         """Calculates "center" position of frustum. Not weighted by mass.
@@ -52,7 +55,10 @@ class Frustums(TensorDataclass):
         Returns:
             xyz positions.
         """
-        pos = self.origins + self.directions * (self.starts + self.ends) / 2
+        spacing = (self.starts + self.ends) / 2
+        if self.spacing_offsets is not None:
+            spacing = spacing + self.spacing_offsets
+        pos = self.origins + self.directions * spacing
         if self.offsets is not None:
             pos = pos + self.offsets
         return pos
@@ -68,6 +74,11 @@ class Frustums(TensorDataclass):
     def set_offsets(self, offsets):
         """Sets offsets for this frustum for computing positions"""
         self.offsets = offsets
+        
+    def set_spacing_offsets(self, spacing_offsets):
+        """Sets offsets for this frustum for computing positions"""
+        self.spacing_offsets = spacing_offsets
+
 
     def get_gaussian_blob(self) -> Gaussians:
         """Calculates guassian approximation of conical frustum.
@@ -122,9 +133,13 @@ class RaySamples(TensorDataclass):
 
     frustums: Frustums
     """Frustums along ray."""
-    camera_indices: Optional[Int[Tensor, "*bs 1"]] = None
+    camera_indices: Optional[Int[Tensor, "*bs 1 1"]] = None
     """Camera index."""
-    deltas: Optional[Float[Tensor, "*bs 1"]] = None
+    nears: Optional[Int[Tensor, "*bs 1 1"]] = None
+    """near planes for each ray"""
+    fars: Optional[Int[Tensor, "*bs 1 1"]] = None
+    """far planes for each ray"""
+    deltas: Optional[Float[Tensor, "*bs num_samples 1"]] = None
     """"width" of each sample."""
     spacing_starts: Optional[Float[Tensor, "*bs num_samples 1"]] = None
     """Start of normalized bin edges along ray [0,1], before warping is applied, ie. linear in disparity sampling."""
@@ -139,8 +154,26 @@ class RaySamples(TensorDataclass):
     """Times at which rays are sampled"""
 
     
+    def get_weights_linear(self, densities: Float[Tensor, "*batch num_samples 1"]) -> Float[Tensor, "*batch num_samples 1"]:
+        densities = torch.cat([torch.ones((densities.shape[0], 1, 1), device=densities.device)*1e-10, densities, torch.ones((densities.shape[0], 1, 1), device=densities.device)*1e10], 1)
+        densities = F.relu(densities)
+        interval_ave_densities = 0.5 * (densities[..., 1:, :] + densities[..., :-1, :])
+        deltas = torch.cat([self.frustums.starts[:, :1, :] - self.nears[:, :1], self.deltas], dim=1)
+        deltas = F.relu(deltas)
+        delta_density = deltas * interval_ave_densities
+        alphas = 1 - torch.exp(-delta_density)
+        transmittance = torch.cumsum(delta_density[..., :-1, :], dim=-2)
+        transmittance = torch.cat(
+            [torch.zeros((*transmittance.shape[:1], 1, 1), device=densities.device), transmittance], dim=-2
+        )
+        transmittance = torch.exp(-transmittance)  # [..., "num_samples"]
+        # transmittance = torch.cat([transmittance, torch.zeros([transmittance.shape[0], 1, 1], device=densities.device)], dim=1)
+        weights = alphas * transmittance  # [..., "num_samples"]
+        weights = torch.nan_to_num(weights)
 
-    def get_weights(self, densities: Float[Tensor, "*batch num_samples 1"]) -> Float[Tensor, "*batch num_samples 1"]:
+        return weights, densities, transmittance
+
+    def get_weights(self, densities: Float[Tensor, "*batch num_samples 1"], return_all: bool=False) -> Float[Tensor, "*batch num_samples 1"]:
         """Return weights based on predicted densities
 
         Args:
@@ -155,13 +188,14 @@ class RaySamples(TensorDataclass):
 
         transmittance = torch.cumsum(delta_density[..., :-1, :], dim=-2)
         transmittance = torch.cat(
-            [torch.zeros((*transmittance.shape[:1], 1, 1), device=densities.device), transmittance], dim=-2
+            [torch.zeros((*transmittance.shape[:-2], 1, 1), device=densities.device), transmittance], dim=-2
         )
         transmittance = torch.exp(-transmittance)  # [..., "num_samples"]
 
         weights = alphas * transmittance  # [..., "num_samples"]
         weights = torch.nan_to_num(weights)
-
+        if return_all:
+            return weights, densities, transmittance
         return weights
 
     @overload
@@ -292,6 +326,7 @@ class RayBundle(TensorDataclass):
         spacing_starts: Optional[Float[Tensor, "*bs num_samples 1"]] = None,
         spacing_ends: Optional[Float[Tensor, "*bs num_samples 1"]] = None,
         spacing_to_euclidean_fn: Optional[Callable] = None,
+        sample_method: Literal["constant", "piecewise_linear"] = "constant"
     ) -> RaySamples:
         """Produces samples for each ray by projection points along the ray direction. Currently samples uniformly.
 
@@ -302,7 +337,21 @@ class RayBundle(TensorDataclass):
         Returns:
             Samples projected along ray.
         """
+        if sample_method == "piecewise_linear":
+            bin_starts = torch.cat([bin_starts, bin_ends[..., -1:, :]], dim=-2)
+            bin_ends = torch.cat([bin_ends, self.fars[..., None]], dim=-2)
+            if spacing_starts is not None and spacing_ends is not None:
+                if spacing_starts.shape[0] == 1:
+                    spacing_starts = spacing_starts.repeat_interleave(bin_starts.shape[0], dim=0)
+                    spacing_ends = spacing_ends.repeat_interleave(bin_ends.shape[0], dim=0)
+                spacing_starts = torch.cat([spacing_starts, spacing_ends[..., -1:, :]], dim=-2)
+                spacing_ends = torch.cat([spacing_ends, torch.ones_like(self.fars[..., None])], dim=-2)
+        
         deltas = bin_ends - bin_starts
+        spacing_offsets = None
+        if sample_method == "piecewise_linear":
+            spacing_offsets = -0.5 * deltas
+                   
         if self.camera_indices is not None:
             camera_indices = self.camera_indices[..., None]
         else:
@@ -315,10 +364,13 @@ class RayBundle(TensorDataclass):
             directions=shaped_raybundle_fields.directions,  # [..., 1, 3]
             starts=bin_starts,  # [..., num_samples, 1]
             ends=bin_ends,  # [..., num_samples, 1]
-            pixel_area=shaped_raybundle_fields.pixel_area,  # [..., 1, 1]
+            pixel_area=shaped_raybundle_fields.pixel_area,  # [..., 1, 1],
+            spacing_offsets=spacing_offsets
         )
 
         ray_samples = RaySamples(
+            nears = self.nears[..., None],
+            fars = self.fars[..., None],
             frustums=frustums,
             camera_indices=camera_indices,  # [..., 1, 1]
             deltas=deltas,  # [..., num_samples, 1]
