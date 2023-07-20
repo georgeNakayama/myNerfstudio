@@ -98,7 +98,7 @@ class MLP(FieldComponent):
         self.net = None
 
         self.tcnn_encoding = None
-        if implementation == "torch":
+        if implementation == "torch" or num_layers <= 0:
             self.build_nn_modules()
         elif implementation == "tcnn" and not TCNN_EXISTS:
             print_tcnn_speed_warning("MLP")
@@ -138,7 +138,9 @@ class MLP(FieldComponent):
     def build_nn_modules(self) -> None:
         """Initialize multi-layer perceptron."""
         layers = []
-        if self.num_layers == 1:
+        if self.num_layers <= 0:
+            layers.append(nn.Identity())
+        elif self.num_layers == 1:
             layers.append(nn.Linear(self.in_dim, self.out_dim))
         else:
             for i in range(self.num_layers - 1):

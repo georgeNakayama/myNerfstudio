@@ -117,7 +117,6 @@ class DepthDataset(InputDataset):
         depth_image = get_depth_image_from_path(
             filepath=filepath, height=height, width=width, scale_factor=scale_factor
         )
-
         return {"depth_image": depth_image}
 
     def _find_transform(self, image_path: Path) -> Union[Path, None]:

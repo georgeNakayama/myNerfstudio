@@ -20,8 +20,9 @@ Miscellaneous helper code.
 from inspect import currentframe
 import typing
 import platform
-from typing import Any, Callable, Dict, List, Optional, TypeVar, Union
+from typing import Any, Callable, Dict, List, Optional, TypeVar, Union, Mapping
 import warnings
+from nerfstudio.utils.rich_utils import CONSOLE
 
 import torch
 
@@ -219,3 +220,24 @@ def get_orig_class(obj, default=None):
             finally:
                 del frame
         return default
+
+def filter_model_state_dict(model_parameters: Mapping[str, torch.Tensor], state_dict: Mapping[str, torch.Tensor]) -> Mapping[str, torch.Tensor]:
+    new_state_dict: Dict[str, Any] = {}
+    model_state_dict: Dict[str, torch.Tensor] = model_parameters
+    for k in state_dict.keys():
+        if "cimle" in k:
+            CONSOLE.print(f"Skip loading parameter: {k}")
+            continue
+        if k in model_state_dict.keys():
+            if state_dict[k].shape != model_state_dict[k].shape:
+                CONSOLE.print(f"Skip loading parameter: {k}, "
+                            f"required shape: {model_state_dict[k].shape}, "
+                            f"loaded shape: {state_dict[k].shape}")
+                continue
+            new_state_dict[k] = state_dict[k]
+        else:
+            CONSOLE.print(f"Dropping parameter {k}")
+    for k in model_state_dict.keys():
+        if k not in state_dict.keys():
+            CONSOLE.print(f"Layer {k} not loaded!")
+    return new_state_dict

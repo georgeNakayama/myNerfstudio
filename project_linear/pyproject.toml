@@ -1,0 +1,16 @@
+[project]
+name = "project_linear"
+version = "0.0.1"
+
+dependencies = [
+    "nerfstudio" # you may want to consider pinning the version, ie "nerfstudio==0.1.19"
+]
+
+[tool.setuptools.packages.find]
+include = ["linear*"]
+
+[project.entry-points.'nerfstudio.method_configs']
+linear_mipnerf = 'linear.configs.linear_config:linear_mip_nerf'
+linear_nerfacto = 'linear.configs.linear_config:linear_nerfacto'
+blender_nerfacto = 'linear.configs.linear_config:blender_nerfacto'
+linear_vanilla_nerf = 'linear.configs.linear_config:linear_vanilla_nerf'

@@ -31,8 +31,9 @@ from torch.amp.autocast_mode import autocast
 from rich import box, style
 from rich.panel import Panel
 from rich.table import Table
+from torch_ema import ExponentialMovingAverage
 from torch.cuda.amp.grad_scaler import GradScaler
-
+from contextlib import nullcontext
 from nerfstudio.configs.experiment_config import ExperimentConfig
 from nerfstudio.data.datamanagers.base_datamanager import VanillaDataManager
 from nerfstudio.engine.callbacks import TrainingCallback, TrainingCallbackAttributes, TrainingCallbackLocation
@@ -91,6 +92,12 @@ class TrainerConfig(ExperimentConfig):
     """Optionally log gradients during training"""
     gradient_accumulation_steps: int = 1
     """Number of steps to accumulate gradients over."""
+    run_test_at_zero_iter: bool = False
+    """Whether to run test at zero iteration"""
+    use_ema: bool = False 
+    """Whether to use EMA """
+    ema_decay: float = 0.995
+    """Set the decay for EMA"""
 
 
 class Trainer:
@@ -142,6 +149,8 @@ class Trainer:
         CONSOLE.log(f"Saving checkpoints to: {self.checkpoint_dir}")
 
         self.viewer_state = None
+        print(self)
+        
 
     def setup(self, test_mode: Literal["test", "val", "inference"] = "val") -> None:
         """Setup the Trainer by calling other setup functions.
@@ -159,6 +168,8 @@ class Trainer:
             local_rank=self.local_rank,
             grad_scaler=self.grad_scaler,
         )
+        if self.config.use_ema:
+            self.ema = ExponentialMovingAverage(self.pipeline.parameters(), decay=self.config.ema_decay)
         self.optimizers = self.setup_optimizers()
 
         # set up viewer if enabled
@@ -315,10 +326,12 @@ class Trainer:
 
                 # Do not perform evaluation if there are no validation images
                 if self.pipeline.datamanager.eval_dataset:
-                    self.eval_iteration(step)
+                    with self.ema.average_parameters() if self.config.use_ema else nullcontext():
+                        self.eval_iteration(step)
                     
                 if self.pipeline.datamanager.test_dataset:
-                    self.test_iteration(step)
+                    with self.ema.average_parameters() if self.config.use_ema else nullcontext():
+                        self.test_iteration(step)
 
                 if step_check(step, self.config.steps_per_save):
                     self.save_checkpoint(step)
@@ -367,7 +380,8 @@ class Trainer:
     def test(self, step: int):
         # Do not perform test evaluation if there are no validation images
         if self.pipeline.datamanager.test_dataset:
-            metrics_dict, images_dict = self.pipeline.get_average_test_images_and_metrics(step=step)
+            with self.ema.average_parameters() if self.config.use_ema else nullcontext():
+                metrics_dict, images_dict = self.pipeline.get_average_test_images_and_metrics(step=step)
             
             writer.put_time(
                 name=EventName.TEST_RAYS_PER_SEC,
@@ -459,6 +473,8 @@ class Trainer:
             if "schedulers" in loaded_state and self.config.load_scheduler:
                 self.optimizers.load_schedulers(loaded_state["schedulers"])
             self.grad_scaler.load_state_dict(loaded_state["scalers"])
+            if self.config.use_ema and loaded_state.get("ema", None) is not None:
+                self.ema.load_state_dict(loaded_state["ema"])
             CONSOLE.print(f"Done loading Nerfstudio checkpoint from {load_path}")
         elif load_checkpoint is not None:
             assert load_checkpoint.exists(), f"Checkpoint {load_checkpoint} does not exist"
@@ -470,6 +486,8 @@ class Trainer:
             if "schedulers" in loaded_state and self.config.load_scheduler:
                 self.optimizers.load_schedulers(loaded_state["schedulers"])
             self.grad_scaler.load_state_dict(loaded_state["scalers"])
+            if self.config.use_ema and loaded_state.get("ema", None) is not None:
+                self.ema.load_state_dict(loaded_state["ema"])
             CONSOLE.print(f"Done loading Nerfstudio checkpoint from {load_checkpoint}")
         else:
             CONSOLE.print("No Nerfstudio checkpoint to load, so training from scratch.")
@@ -486,8 +504,7 @@ class Trainer:
             self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
         # save the checkpoint
         ckpt_path: Path = self.checkpoint_dir / f"step-{step:09d}.ckpt"
-        torch.save(
-            {
+        state_dict = {
                 "step": step,
                 "pipeline": self.pipeline.module.state_dict()  # type: ignore
                 if hasattr(self.pipeline, "module")
@@ -495,9 +512,10 @@ class Trainer:
                 "optimizers": {k: v.state_dict() for (k, v) in self.optimizers.optimizers.items()},
                 "schedulers": {k: v.state_dict() for (k, v) in self.optimizers.schedulers.items()},
                 "scalers": self.grad_scaler.state_dict(),
-            },
-            ckpt_path,
-        )
+            }
+        if self.config.use_ema:
+            state_dict["ema"] = self.ema.state_dict()
+        torch.save(state_dict,ckpt_path)
         # possibly delete old checkpoints
         if self.config.save_only_latest_checkpoint:
             # delete everything else in the checkpoint folder
@@ -525,7 +543,8 @@ class Trainer:
                 loss /= self.gradient_accumulation_steps
             self.grad_scaler.scale(loss).backward()  # type: ignore
         self.optimizers.optimizer_scaler_step_all(self.grad_scaler)
-
+        if self.config.use_ema:
+            self.ema.update()
         if self.config.log_gradients:
             total_grad = 0
             for tag, value in self.pipeline.model.named_parameters():
@@ -595,7 +614,7 @@ class Trainer:
         """
 
         # all test images
-        if step_check(step, self.config.steps_per_test_all_images, run_at_zero=True) or force_run:
+        if step_check(step, self.config.steps_per_test_all_images, run_at_zero=self.config.run_test_at_zero_iter) or force_run:
             metrics_dict, images_dict = self.pipeline.get_average_test_images_and_metrics(step=step)
             writer.put_dict(name="Test Images Metrics Dict (all images)", scalar_dict=metrics_dict, step=step)
             group = "Test Images"

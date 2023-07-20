@@ -41,7 +41,7 @@ from nerfstudio.field_components.spatial_distortions import SpatialDistortion
 from nerfstudio.fields.base_field import Field, shift_directions_for_tcnn
 from nerfstudio.fields.nerfacto_field import NerfactoField
 from myproject.fields.cimle_field import cIMLEField
-
+from nerfstudio.utils.rich_utils import CONSOLE
 
 class cIMLENerfactoField(NerfactoField):
     """Compound Field that uses TCNN
@@ -75,32 +75,49 @@ class cIMLENerfactoField(NerfactoField):
         self,
         aabb: Tensor,
         num_images: int,
-        color_cimle: bool=True,
-        cimle_ch: int=32,
-        num_layers_cimle: int=1,
-        cimle_activation: Literal["relu", "none"] = "relu",
-        num_layers: int = 2,
-        hidden_dim: int = 64,
-        geo_feat_dim: int = 15,
+        implementation: Literal["tcnn", "torch"] = "tcnn",
+        spatial_distortion: Optional[SpatialDistortion] = None,
+        use_pred_normals: bool = False,
+        
+        # hash grid specs
+        base_res: int = 16,
+        features_per_level: int = 2,
         num_levels: int = 16,
         max_res: int = 2048,
         log2_hashmap_size: int = 19,
+        
+        # base mlp related
+        num_layers: int = 2,
+        hidden_dim: int = 64,
+        geo_feat_dim: int = 15,
+        
+        # color channel related
         num_layers_color: int = 3,
-        num_layers_transient: int = 2,
         hidden_dim_color: int = 64,
+        
+        # transient embedding related
+        num_layers_transient: int = 2,
         hidden_dim_transient: int = 64,
-        appearance_embedding_dim: int = 32,
         transient_embedding_dim: int = 16,
         use_transient_embedding: bool = False,
+        
+        # semantic related
         use_semantics: bool = False,
         num_semantic_classes: int = 100,
         pass_semantic_gradients: bool = False,
-        use_pred_normals: bool = False,
+        
+        # appearance embedding related
+        appearance_embedding_dim: int = 32,
         use_average_appearance_embedding: bool = False,
-        spatial_distortion: Optional[SpatialDistortion] = None,
-        cimle_injection_type: Literal["add", "concat"] = "concat",
+        
+        # cIMLE related
+        cimle_injection_type: Literal["add", "concat", "cat_linear"] = "concat",
+        cimle_ch: int=32,
+        num_layers_cimle: int=1,
+        color_cimle: bool=False,
+        cimle_activation: Literal["relu", "none"] = "relu",
         cimle_pretrain: bool = False,
-        implementation: Literal["tcnn", "torch"] = "tcnn",
+        use_cimle_grid: bool = False,
     ) -> None:
         super().__init__(
             aabb,
@@ -112,7 +129,9 @@ class cIMLENerfactoField(NerfactoField):
             max_res=max_res,
             log2_hashmap_size=log2_hashmap_size,
             num_layers_color=num_layers_color,
-            num_layers_transient=num_layers_color,
+            num_layers_transient=num_layers_transient,
+            base_res=base_res, 
+            features_per_level=features_per_level,
             hidden_dim_color=hidden_dim_color,
             hidden_dim_transient=hidden_dim_transient,
             appearance_embedding_dim=appearance_embedding_dim,
@@ -127,32 +146,29 @@ class cIMLENerfactoField(NerfactoField):
             implementation=implementation
             )
         
-        
-        base_res: int = 16
-        features_per_level: int = 2
-        encoder = HashEncoding(
+        self.color_cimle=color_cimle
+        self.use_cimle_grid=use_cimle_grid
+        color_in_dim = self.direction_encoding.get_out_dim() + self.geo_feat_dim
+        self.cimle = cIMLEField(
+            cimle_ch,
+            color_in_dim if color_cimle else self.mlp_base_grid.get_out_dim(),
+            num_layers_cimle,
+            cimle_injection_type,
+            cimle_pretrain=cimle_pretrain,
+            cimle_act=cimle_activation,
+            
+            use_cimle_grid=use_cimle_grid,
             num_levels=num_levels,
-            min_res=base_res,
+            base_res=base_res,
             max_res=max_res,
             log2_hashmap_size=log2_hashmap_size,
             features_per_level=features_per_level,
-            implementation=implementation,
-        )
-        
-        color_in_dim = self.direction_encoding.get_out_dim() + self.geo_feat_dim
-        self.color_cimle=color_cimle
-        self.cimle = cIMLEField(
-            cimle_ch, 
-            num_layers_cimle,
-            cimle_ch if cimle_injection_type == "concat" else color_in_dim * int(color_cimle) + encoder.get_out_dim() * int(not color_cimle),
-            cimle_injection_type,
-            cimle_pretrain=cimle_pretrain,
-            cimle_act=cimle_activation
+            implementation=implementation
             )
 
         if color_cimle:
             self.mlp_head = MLP(
-                in_dim=self.direction_encoding.get_out_dim() + self.geo_feat_dim + self.cimle.out_dim * int(cimle_injection_type == "concat"),
+                in_dim=self.cimle.out_dim,
                 num_layers=num_layers_color,
                 layer_width=hidden_dim_color,
                 out_dim=3,
@@ -161,8 +177,8 @@ class cIMLENerfactoField(NerfactoField):
                 implementation=implementation,
             )
         else:
-            network = MLP(
-                in_dim=encoder.get_out_dim() + self.cimle.out_dim * int(cimle_injection_type == "concat"),
+            self.mlp_base_mlp = MLP(
+                in_dim=self.cimle.out_dim,
                 num_layers=num_layers,
                 layer_width=hidden_dim,
                 out_dim=1 + self.geo_feat_dim,
@@ -170,7 +186,6 @@ class cIMLENerfactoField(NerfactoField):
                 out_activation=None,
                 implementation=implementation,
             )
-            self.mlp_base = torch.nn.Sequential(encoder, network)
 
     def get_param_group(self) -> Dict[str, List[Parameter]]:
         param_groups = {'fields':[], 'cimle':[]}
@@ -184,7 +199,29 @@ class cIMLENerfactoField(NerfactoField):
         return param_groups
 
 
-    def get_density(self, ray_samples: RaySamples) -> Tuple[Tensor, Tensor]:
+    def forward(self, ray_samples: RaySamples, compute_normals: bool = False) -> Dict[FieldHeadNames, Tensor]:
+        """Evaluates the field at points along the ray.
+
+        Args:
+            ray_samples: Samples to evaluate field on.
+        """
+        if compute_normals:
+            with torch.enable_grad():
+                density, density_embedding, metric_dict = self.get_density(ray_samples)
+        else:
+            density, density_embedding, metric_dict = self.get_density(ray_samples)
+
+        field_outputs = self.get_outputs(ray_samples, density_embedding=density_embedding)
+        field_outputs[FieldHeadNames.DENSITY] = density  # type: ignore
+        field_outputs["field.latent_diff"] = metric_dict["latent_diff"]  # type: ignore
+
+        if compute_normals:
+            with torch.enable_grad():
+                normals = self.get_normals()
+            field_outputs[FieldHeadNames.NORMALS] = normals  # type: ignore
+        return field_outputs
+
+    def get_density(self, ray_samples: RaySamples) -> Tuple[Tensor, Tensor, Dict[str, Tensor]]:
         """Computes and returns the densities."""
         if self.color_cimle:
             return super().get_density(ray_samples)
@@ -203,12 +240,12 @@ class cIMLENerfactoField(NerfactoField):
         if not self._sample_locations.requires_grad:
             self._sample_locations.requires_grad = True
         positions_flat = positions.view(-1, 3)
-        h_table_latents = self.mlp_base[0](positions_flat)
+        h_table_latents = self.mlp_base_grid(positions_flat)
         
-        # color cimle
-        h_table_latents = self.cimle(ray_samples, h_table_latents)
+        # density cimle
+        h_table_latents, latent_diff = self.cimle(ray_samples, h_table_latents, positions=positions_flat)
 
-        h = self.mlp_base[1](h_table_latents).view(*ray_samples.frustums.shape, -1)
+        h = self.mlp_base_mlp(h_table_latents).view(*ray_samples.frustums.shape, -1)
         
         density_before_activation, base_mlp_out = torch.split(h, [1, self.geo_feat_dim], dim=-1)
         self._density_before_activation = density_before_activation
@@ -218,7 +255,7 @@ class cIMLENerfactoField(NerfactoField):
         # from smaller internal (float16) parameters.
         density = trunc_exp(density_before_activation.to(positions))
         density = density * selector[..., None]
-        return density, base_mlp_out
+        return density, base_mlp_out, {"latent_diff": latent_diff}
     
     def get_outputs(
         self, ray_samples: RaySamples, density_embedding: Optional[Tensor] = None

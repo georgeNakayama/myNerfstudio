@@ -25,8 +25,8 @@ import numpy as np
 import torch
 from torch import Tensor
 from torch.nn import Parameter
+from torchmetrics import PeakSignalNoiseRatio
 from torchmetrics.functional import structural_similarity_index_measure
-from torchmetrics.image import PeakSignalNoiseRatio
 from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
 
 from nerfstudio.cameras.rays import RayBundle, RaySamples
@@ -48,11 +48,12 @@ from nerfstudio.model_components.renderers import AccumulationRenderer, DepthRen
 from nerfstudio.model_components.scene_colliders import NearFarCollider, AABBBoxCollider
 from nerfstudio.model_components.shaders import NormalsShader
 from nerfstudio.models.base_model import Model, ModelConfig
+from nerfstudio.models.nerfacto import Nerfa
 from nerfstudio.utils import colormaps
 
 
 @dataclass
-class NerfactoModelConfig(ModelConfig):
+class StochasticNerfactoModelConfig(NerfactoModelConfig):
     """Nerfacto Model Config"""
 
     _target: Type = field(default_factory=lambda: NerfactoModel)
@@ -71,7 +72,7 @@ class NerfactoModelConfig(ModelConfig):
     num_levels: int = 16
     """Number of levels of the hashmap for the base mlp."""
     base_res: int = 16
-    """Resolution of the base grid for the hashgrid."""
+    """Resolution of the base grid for the hasgrid."""
     max_res: int = 2048
     """Maximum resolution of the hashmap for the base mlp."""
     log2_hashmap_size: int = 19
@@ -111,8 +112,6 @@ class NerfactoModelConfig(ModelConfig):
     """Whether to use proposal weight annealing."""
     use_average_appearance_embedding: bool = True
     """Whether to use average appearance embedding or zeros for inference."""
-    appearance_embedding_dim: int = 32
-    """appearance embedding dimension. 0 to turn it off"""
     proposal_weights_anneal_slope: float = 10.0
     """Slope of the annealing function for the proposal weights. Negative to turn it off"""
     proposal_weights_anneal_max_num_iters: int = 1000
@@ -129,7 +128,9 @@ class NerfactoModelConfig(ModelConfig):
     """Which implementation to use for the model."""
     depth_method: Literal["expected", "median"] = "median"
     """Which depth map rendering method to use."""
-    add_end_bin: bool = False 
+    appearance_embed_dim: int = 32
+    """Dimension of the appearance embedding."""
+    add_end_bin: bool = True 
     """Specifies whether to add an ending bin to each ray's samples."""
     use_aabb_collider: bool = False
     """Specifies whether to use aabb collider instead of near and far collider"""
@@ -158,16 +159,14 @@ class NerfactoModel(Model):
             hidden_dim=self.config.hidden_dim,
             num_levels=self.config.num_levels,
             max_res=self.config.max_res,
-            base_res=self.config.base_res,
-            features_per_level=self.config.features_per_level,
             log2_hashmap_size=self.config.log2_hashmap_size,
             hidden_dim_color=self.config.hidden_dim_color,
             hidden_dim_transient=self.config.hidden_dim_transient,
             spatial_distortion=scene_contraction,
             num_images=self.num_train_data,
             use_pred_normals=self.config.predict_normals,
-            appearance_embedding_dim=self.config.appearance_embedding_dim,
             use_average_appearance_embedding=self.config.use_average_appearance_embedding,
+            appearance_embedding_dim=self.config.appearance_embed_dim,
             implementation=self.config.implementation,
         )
 
@@ -243,7 +242,6 @@ class NerfactoModel(Model):
         self.psnr = PeakSignalNoiseRatio(data_range=1.0)
         self.ssim = structural_similarity_index_measure
         self.lpips = LearnedPerceptualImagePatchSimilarity(normalize=True)
-        self.step = 0
 
     def get_param_groups(self) -> Dict[str, List[Parameter]]:
         param_groups = {}
@@ -262,7 +260,6 @@ class NerfactoModel(Model):
             def set_anneal(step):
                 # https://arxiv.org/pdf/2111.12077.pdf eq. 18
                 train_frac = np.clip(step / N, 0, 1)
-                self.step = step
 
                 def bias(x, b):
                     if b < 0:
@@ -308,8 +305,7 @@ class NerfactoModel(Model):
         ray_samples_list.append(ray_samples)
 
         rgb = self.renderer_rgb(rgb=field_outputs[FieldHeadNames.RGB], weights=weights)
-        with torch.no_grad():
-            depth = self.renderer_depth(weights=weights, ray_samples=ray_samples)
+        depth = self.renderer_depth(weights=weights, ray_samples=ray_samples)
         accumulation = self.renderer_accumulation(weights=weights)
 
         outputs = {
@@ -355,11 +351,8 @@ class NerfactoModel(Model):
 
     def get_metrics_dict(self, outputs, batch):
         metrics_dict = {}
-        gt_rgb = batch["image"].to(self.device)  # RGB or RGBA image
-        gt_rgb = self.renderer_rgb.blend_background(gt_rgb)  # Blend if RGBA
-        predicted_rgb = outputs["rgb"]
-        metrics_dict["psnr"] = self.psnr(predicted_rgb, gt_rgb)
-
+        image = batch["image"].to(self.device)
+        metrics_dict["psnr"] = self.psnr(outputs["rgb"], image)
         if self.training:
             metrics_dict["distortion"] = distortion_loss(outputs["weights_list"], outputs["ray_samples_list"])
         return metrics_dict
@@ -367,13 +360,7 @@ class NerfactoModel(Model):
     def get_loss_dict(self, outputs, batch, metrics_dict=None):
         loss_dict = {}
         image = batch["image"].to(self.device)
-        pred_rgb, gt_rgb = self.renderer_rgb.blend_background_for_loss_computation(
-            pred_image=outputs["rgb"],
-            pred_accumulation=outputs["accumulation"],
-            gt_image=image,
-        )
-
-        loss_dict["rgb_loss"] = self.rgb_loss(gt_rgb, pred_rgb)
+        loss_dict["rgb_loss"] = self.rgb_loss(image, outputs["rgb"])
         if self.training:
             loss_dict["interlevel_loss"] = self.config.interlevel_loss_mult * interlevel_loss(
                 outputs["weights_list"], outputs["ray_samples_list"]
@@ -395,26 +382,25 @@ class NerfactoModel(Model):
     def get_image_metrics_and_images(
         self, outputs: Dict[str, torch.Tensor], batch: Dict[str, torch.Tensor]
     ) -> Tuple[Dict[str, float], Dict[str, torch.Tensor]]:
-        gt_rgb = batch["image"].to(self.device)
-        predicted_rgb = outputs["rgb"]  # Blended with background (black if random background)
-        gt_rgb = self.renderer_rgb.blend_background(gt_rgb)
+        image = batch["image"].to(self.device)
+        rgb = outputs["rgb"]
         acc = colormaps.apply_colormap(outputs["accumulation"])
         depth = colormaps.apply_depth_colormap(
             outputs["depth"],
             accumulation=outputs["accumulation"],
         )
 
-        combined_rgb = torch.cat([gt_rgb, predicted_rgb], dim=1)
+        combined_rgb = torch.cat([image, rgb], dim=1)
         combined_acc = torch.cat([acc], dim=1)
         combined_depth = torch.cat([depth], dim=1)
 
         # Switch images from [H, W, C] to [1, C, H, W] for metrics computations
-        gt_rgb = torch.moveaxis(gt_rgb, -1, 0)[None, ...]
-        predicted_rgb = torch.moveaxis(predicted_rgb, -1, 0)[None, ...]
+        image = torch.moveaxis(image, -1, 0)[None, ...]
+        rgb = torch.moveaxis(rgb, -1, 0)[None, ...]
 
-        psnr = self.psnr(gt_rgb, predicted_rgb)
-        ssim = self.ssim(gt_rgb, predicted_rgb)
-        lpips = self.lpips(gt_rgb, predicted_rgb)
+        psnr = self.psnr(image, rgb)
+        ssim = self.ssim(image, rgb)
+        lpips = self.lpips(image, rgb)
 
         # all of these metrics will be logged as scalars
         metrics_dict = {"psnr": float(psnr.item()), "ssim": float(ssim)}  # type: ignore

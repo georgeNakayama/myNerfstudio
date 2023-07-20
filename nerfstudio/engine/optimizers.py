@@ -65,6 +65,22 @@ class AdamOptimizerConfig(OptimizerConfig):
     _target: Type = torch.optim.Adam
     weight_decay: float = 0
     """The weight decay to use."""
+    
+@dataclass
+class AdamWOptimizerConfig(OptimizerConfig):
+    """Basic optimizer config with Adam"""
+
+    _target: Type = torch.optim.AdamW
+    weight_decay: float = 0
+    """The weight decay to use."""
+
+@dataclass
+class AdamaxOptimizerConfig(OptimizerConfig):
+    """Basic optimizer config with Adam"""
+
+    _target: Type = torch.optim.Adamax
+    weight_decay: float = 0
+    """The weight decay to use."""
 
 
 @dataclass
@@ -94,6 +110,9 @@ class Optimizers:
         assert isinstance(self.config["valid_param_groups"], ValidParamGroupsConfig)
         valid_pgs = self.config["valid_param_groups"].valid_pgs
         for param_group_name, params in param_groups.items():
+            if len(params) == 0:
+                CONSOLE.print(f"param group [red]{param_group_name}[/red] is empty!. Skipping....")
+                continue
             if param_group_name not in valid_pgs:
                 CONSOLE.print(f"param group [red]{param_group_name}[/red] is not specified in [green]valid_param_group[/green], parameters in this group will NOT be updated during optimization!")
                 continue
