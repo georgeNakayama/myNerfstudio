@@ -63,9 +63,10 @@ class LinearNerfactoModelConfig(NerfactoModelConfig):
     farcolorfix: bool = False
     proposal_initial_sampler="uniform"
     disable_scene_contraction=True
-    num_proposal_samples_per_ray: Tuple[int, ...] = (256, 256)
+    num_proposal_samples_per_ray: Tuple[int, ...] = (256, 96)
     """Number of samples per ray for each proposal network."""
-    num_nerf_samples_per_ray: int = 256
+    num_nerf_samples_per_ray: int = 48
+    num_constant_iterations: int = 5000
     
 
 
@@ -96,7 +97,7 @@ class LinearNerfactoModel(NerfactoModel):
         if self.config.proposal_initial_sampler == "uniform":
             initial_sampler = LinearUniformSampler(single_jitter=self.config.use_single_jitter)
 
-        self.proposal_sampler = LinearProposalNetworkSampler(
+        self.linear_proposal_sampler = LinearProposalNetworkSampler(
             num_nerf_samples_per_ray=self.config.num_nerf_samples_per_ray,
             num_proposal_samples_per_ray=self.config.num_proposal_samples_per_ray,
             num_proposal_network_iterations=self.config.num_proposal_iterations,
@@ -106,35 +107,57 @@ class LinearNerfactoModel(NerfactoModel):
         )
 
         # renderers
-        self.renderer_rgb = LinearRGBRenderer(background_color=self.config.background_color)
+        self.linear_renderer_rgb = LinearRGBRenderer(background_color=self.config.background_color)
+        self.use_constant = self.config.num_constant_iterations > 0
 
 
     
     def get_training_callbacks(
         self, training_callback_attributes: TrainingCallbackAttributes
     ) -> List[TrainingCallback]:
-        callbacks = []
-        if self.config.use_proposal_weight_anneal:
-            callbacks.append(
-                TrainingCallback(
-                    where_to_run=[TrainingCallbackLocation.AFTER_TRAIN_ITERATION],
-                    update_every_num_iters=1,
-                    func=self.proposal_sampler.step_cb,
-                )
-            )
+        callbacks = super().get_training_callbacks(training_callback_attributes=training_callback_attributes)
+        if self.config.num_constant_iterations > 0:
+            def toggle_constant(step):
+                self.use_constant = step < self.config.num_constant_iterations
+            toggle_constant_cb = TrainingCallback(where_to_run=[TrainingCallbackLocation.BEFORE_TRAIN_ITERATION], update_every_num_iters=1, func=toggle_constant)
+            callbacks.append(toggle_constant_cb)
+        
         return callbacks
 
     def get_outputs(self, ray_bundle: RayBundle, return_samples:bool=False, **kwargs):
         ray_samples: RaySamples
-        ray_samples, weights_list, ray_samples_list = self.proposal_sampler(ray_bundle, density_fns=self.density_fns)
+        if self.use_constant:
+            outs = self.proposal_sampler(ray_bundle, density_fns=self.density_fns)
+        else:
+            outs = self.linear_proposal_sampler(ray_bundle, density_fns=self.density_fns)
+
+        if len(outs) == 3:
+            ray_samples, weights_list, ray_samples_list = outs
+        elif len(outs) == 4:
+            ray_samples, weights_list, ray_samples_list, metric_dict_list = outs
+        else:
+            raise AssertionError
+
         field_outputs = self.field.forward(ray_samples, compute_normals=self.config.predict_normals)
         if self.config.use_gradient_scaling:
             field_outputs = scale_gradients_by_distance_squared(field_outputs, ray_samples)
-        weights, _, _ = ray_samples.get_weights_linear(field_outputs[FieldHeadNames.DENSITY])
-        weights_list.append(weights[:, 1:-1])
-        ray_samples_list.append(ray_samples[:, :-1])
+            
+        if self.use_constant:
+            weights = ray_samples.get_weights(field_outputs[FieldHeadNames.DENSITY])
+            weights_list.append(weights)
+            ray_samples_list.append(ray_samples)
+        else:
+            print("11111111")
+            weights, _, _ = ray_samples.get_weights_linear(field_outputs[FieldHeadNames.DENSITY])
+            weights_list.append(weights[:, 1:-1])
+            ray_samples_list.append(ray_samples[:, :-1])
 
-        rgb = self.renderer_rgb(rgb=field_outputs[FieldHeadNames.RGB], weights=weights)
+        if self.use_constant:
+            rgb = self.renderer_rgb(rgb=field_outputs[FieldHeadNames.RGB], weights=weights)
+        else:
+            print("11111111")
+            rgb = self.linear_renderer_rgb(rgb=field_outputs[FieldHeadNames.RGB], weights=weights)
+            
         depth = self.renderer_depth(weights=weights, ray_samples=ray_samples)
         accumulation = self.renderer_accumulation(weights=weights)
 
