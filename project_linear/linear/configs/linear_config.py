@@ -50,6 +50,9 @@ linear_nerfacto = MethodSpecification(
     steps_per_eval_batch=500,
     steps_per_save=2000,
     max_num_iterations=30000,
+    steps_per_train_image=5000,
+    steps_per_eval_image=5000,
+    steps_per_test_all_images=100000000000000,
     mixed_precision=True,
     pipeline=VanillaPipelineConfig(
         datamanager=VanillaDataManagerConfig(
@@ -57,26 +60,26 @@ linear_nerfacto = MethodSpecification(
             train_num_rays_per_batch=4096,
             eval_num_rays_per_batch=4096,
             camera_optimizer=CameraOptimizerConfig(
-                mode="off",
+                mode="SO3xR3",
                 optimizer=AdamOptimizerConfig(lr=6e-4, eps=1e-8, weight_decay=1e-2),
                 scheduler=ExponentialDecaySchedulerConfig(lr_final=6e-6, max_steps=200000),
             ),
         ),
         model=LinearNerfactoModelConfig(
             eval_num_rays_per_chunk=1 << 15,
-            near_plane=2.0,
-            far_plane=6.0,
+            # near_plane=2.0,
+            # far_plane=6.0,
             color_mode="midpoint"
         ),
     ),
     optimizers={
         "proposal_networks": {
-            "optimizer": AdamOptimizerConfig(lr=1e-3, eps=1e-15),
-            "scheduler": ExponentialDecaySchedulerConfig(lr_final=0.0001, max_steps=200000),
+            "optimizer": AdamOptimizerConfig(lr=1e-2, eps=1e-15),
+            "scheduler": ExponentialDecaySchedulerConfig(lr_final=0.0001, max_steps=30000),
         },
         "fields": {
             "optimizer": AdamOptimizerConfig(lr=1e-2, eps=1e-15),
-            "scheduler": ExponentialDecaySchedulerConfig(lr_final=0.0001, max_steps=200000),
+            "scheduler": ExponentialDecaySchedulerConfig(lr_final=0.0001, max_steps=30000),
         },
     },
     viewer=ViewerConfig(num_rays_per_chunk=1 << 15),

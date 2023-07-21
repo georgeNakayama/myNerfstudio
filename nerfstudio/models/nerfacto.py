@@ -290,15 +290,7 @@ class NerfactoModel(Model):
 
     def get_outputs(self, ray_bundle: RayBundle, return_samples:bool=False, **kwargs):
         ray_samples: RaySamples
-        outs = self.proposal_sampler(ray_bundle, density_fns=self.density_fns)
-        metric_dict_list: Optional[Dict[str, List[Tensor]]] = None
-        if len(outs) == 3:
-            ray_samples, weights_list, ray_samples_list = outs
-        elif len(outs) == 4:
-            ray_samples, weights_list, ray_samples_list, metric_dict_list = outs
-        else:
-            raise AssertionError
-        
+        ray_samples, weights_list, ray_samples_list = self.proposal_sampler(ray_bundle, density_fns=self.density_fns)
         field_outputs = self.field.forward(ray_samples, compute_normals=self.config.predict_normals)
         if self.config.use_gradient_scaling:
             field_outputs = scale_gradients_by_distance_squared(field_outputs, ray_samples)
@@ -317,12 +309,6 @@ class NerfactoModel(Model):
             "accumulation": accumulation,
             "depth": depth,
         }
-        if "field.latent_diff" in field_outputs.keys():
-            outputs["field.latent_diff"] = field_outputs["field.latent_diff"].mean(-1)
-        if metric_dict_list is not None:
-            if "latent_diff" in metric_dict_list.keys():
-                for i, diff in enumerate(metric_dict_list["latent_diff"]):
-                    outputs[f"prop_{i}.latent_diff"] = diff.mean(-1)
                     
         if self.config.predict_normals:
             normals = self.renderer_normals(normals=field_outputs[FieldHeadNames.NORMALS], weights=weights)
@@ -347,9 +333,6 @@ class NerfactoModel(Model):
 
         for i in range(self.config.num_proposal_iterations):
             outputs[f"prop_depth_{i}"] = self.renderer_depth(weights=weights_list[i], ray_samples=ray_samples_list[i])
-        if return_samples:
-            outputs["weights_dict"] = dict(zip([f"prop_depth_{i}" for i in range(self.config.num_proposal_iterations)] + ["depth"], weights_list))
-            outputs["ray_samples_dict"] = dict(zip([f"prop_depth_{i}" for i in range(self.config.num_proposal_iterations)] + ["depth"], ray_samples_list))
 
         return outputs
 
