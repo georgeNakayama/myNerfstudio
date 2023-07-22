@@ -552,7 +552,7 @@ class ProposalNetworkSampler(Sampler):
         single_jitter: bool = False,
         update_sched: Callable = lambda x: 1,
         initial_sampler: Optional[Sampler] = None,
-        add_end_bin: bool = True
+        add_end_bin: bool = False
     ) -> None:
         super().__init__()
         self.num_proposal_samples_per_ray = num_proposal_samples_per_ray
@@ -586,14 +586,12 @@ class ProposalNetworkSampler(Sampler):
         self,
         ray_bundle: Optional[RayBundle] = None,
         density_fns: Optional[List[Callable]] = None,
-        **density_kwargs
     ) -> Tuple[RaySamples, List, List]:
         assert ray_bundle is not None
         assert density_fns is not None
 
         weights_list = []
         ray_samples_list = []
-        metric_dict_list = defaultdict(list)
 
         n = self.num_proposal_network_iterations
         weights = None
@@ -615,16 +613,10 @@ class ProposalNetworkSampler(Sampler):
                 assert ray_samples is not None
                 if updated:
                     # always update on the first step or the inf check in grad scaling crashes
-                    density_outs = density_fns[i_level](ray_samples.frustums.get_positions(), metadata=ray_samples.metadata)
+                    density = density_fns[i_level](ray_samples.frustums.get_positions())
                 else:
                     with torch.no_grad():
-                        density_outs = density_fns[i_level](ray_samples.frustums.get_positions(), metadata=ray_samples.metadata)
-                
-                density = density_outs[0]
-                if len(density_outs) == 2:
-                    assert isinstance(density_outs[1], dict)
-                    for k, v in density_outs[1].items():
-                        metric_dict_list[k].append(v)
+                        density = density_fns[i_level](ray_samples.frustums.get_positions())
                 weights = ray_samples.get_weights(density)
                 weights_list.append(weights)  # (num_rays, num_samples)
                 ray_samples_list.append(ray_samples)
@@ -632,8 +624,6 @@ class ProposalNetworkSampler(Sampler):
             self._steps_since_update = 0
 
         assert ray_samples is not None
-        if len(metric_dict_list.keys()) > 0:
-            return ray_samples, weights_list, ray_samples_list, metric_dict_list
         return ray_samples, weights_list, ray_samples_list
 
 
