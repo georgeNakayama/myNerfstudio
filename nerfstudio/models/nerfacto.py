@@ -129,7 +129,7 @@ class NerfactoModelConfig(ModelConfig):
     """Which depth map rendering method to use."""
     appearance_embed_dim: int = 32
     """Dimension of the appearance embedding."""
-    add_end_bin: bool = True 
+    add_end_bin: bool = False 
     """Specifies whether to add an ending bin to each ray's samples."""
     use_aabb_collider: bool = False
     """Specifies whether to use aabb collider instead of near and far collider"""
