@@ -553,7 +553,8 @@ class ProposalNetworkSampler(Sampler):
         single_jitter: bool = False,
         update_sched: Callable = lambda x: 1,
         initial_sampler: Optional[Sampler] = None,
-        add_end_bin: bool = False
+        add_end_bin: bool = False,
+        include_original: bool = False
     ) -> None:
         super().__init__()
         self.num_proposal_samples_per_ray = num_proposal_samples_per_ray
@@ -568,7 +569,7 @@ class ProposalNetworkSampler(Sampler):
             self.initial_sampler = UniformLinDispPiecewiseSampler(single_jitter=single_jitter)
         else:
             self.initial_sampler = initial_sampler
-        self.pdf_sampler = PDFSampler(include_original=False, single_jitter=single_jitter, add_end_bin=add_end_bin)
+        self.pdf_sampler = PDFSampler(include_original=include_original, single_jitter=single_jitter, add_end_bin=add_end_bin)
 
         self._anneal = 1.0
         self._steps_since_update = 0

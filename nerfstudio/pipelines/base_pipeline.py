@@ -348,7 +348,7 @@ class VanillaPipeline(Pipeline):
         """
         self.eval()
         ray_bundle, batch = self.datamanager.next_eval(step)
-        model_outputs = self.model(ray_bundle, sample_latent=True)
+        model_outputs = self.model(ray_bundle)
         metrics_dict = self.model.get_metrics_dict(model_outputs, batch)
         loss_dict = self.model.get_loss_dict(model_outputs, batch, metrics_dict)
         self.train()
@@ -460,12 +460,12 @@ class VanillaPipeline(Pipeline):
         self.train()
         return metrics_dict
 
-    
+
 
 
     @profiler.time_function
     @torch.no_grad()
-    def get_average_eval_image_metrics(self, step: Optional[int] = None, output_path: Optional[Path] = None, get_std: bool = False) -> Tuple[Dict[str, Union[Tensor, float]], Dict[str, Tensor]]:
+    def get_average_test_images_and_metrics(self, step: Optional[int] = None, output_path: Optional[Path] = None, get_std: bool = False) -> Tuple[Dict[str, Union[Tensor, float]], Dict[str, Tensor]]:
         """Iterate over all the images in the eval dataset and get the average.
 
         Returns:
@@ -492,14 +492,10 @@ class VanillaPipeline(Pipeline):
                     num_rays = height * width
                     outputs = self.model.get_outputs_for_camera_ray_bundle(camera_ray_bundle)
                     metrics_dict, images_dict = self.model.get_image_metrics_and_images(outputs, batch)
-    
-                    if output_path is not None:
-                        camera_indices = camera_ray_bundle.camera_indices
-                        assert camera_indices is not None
-                        for key, val in images_dict.items():
-                            Image.fromarray((val * 255).byte().cpu().numpy()).save(
-                                output_path / "{0:06d}-{1}.jpg".format(int(camera_indices[0, 0, 0]), key)
-                            )
+                    for k, v in images_dict.items():
+                        if torch.is_tensor(v):
+                            v = v.detach().cpu()
+                        total_image_dict[k].append(v)
                     assert "num_rays_per_sec" not in metrics_dict
                     metrics_dict["num_rays_per_sec"] = num_rays / (time() - inner_start)
                     fps_str = "fps"
@@ -513,7 +509,6 @@ class VanillaPipeline(Pipeline):
             metrics_dict[key] = float(
                 torch.mean(torch.tensor([metrics_dict[key] for metrics_dict in metrics_dict_list])).detach().cpu()
             )
-        total_image_dict = {k: torch.stack(v, dim=0) for k, v in total_image_dict.items()}
         self.train()
         return metrics_dict, total_image_dict
 
@@ -542,9 +537,9 @@ class VanillaPipeline(Pipeline):
             assert self.datamanager.fixed_indices_train_dataloader is not None 
             assert self.datamanager.fixed_indices_eval_dataloader is not None 
             assert self.datamanager.fixed_indices_test_dataloader is not None 
-            all_train_views = torch.stack([batch['image'] for _, batch in self.datamanager.fixed_indices_train_dataloader], dim=0)
-            all_val_views = torch.stack([batch['image'] for _, batch in self.datamanager.fixed_indices_eval_dataloader], dim=0)
-            all_test_views = torch.stack([batch['image'] for _, batch in self.datamanager.fixed_indices_test_dataloader], dim=0)
+            all_train_views = [batch['image'] for _, batch in self.datamanager.fixed_indices_train_dataloader]
+            all_val_views = [batch['image'] for _, batch in self.datamanager.fixed_indices_eval_dataloader]
+            all_test_views = [batch['image'] for _, batch in self.datamanager.fixed_indices_test_dataloader]
             writer.put_image(name="all_train_views", image=all_train_views, step=step)
             writer.put_image(name="all_val_views", image=all_val_views, step=step)
             writer.put_image(name="all_test_views", image=all_test_views, step=step)

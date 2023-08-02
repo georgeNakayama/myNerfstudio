@@ -394,11 +394,11 @@ class NerfactoModel(Model):
 
         psnr = self.psnr(gt_rgb, predicted_rgb)
         ssim = self.ssim(gt_rgb, predicted_rgb)
-        lpips = self.lpips(gt_rgb, predicted_rgb)
+        # lpips = self.lpips(gt_rgb, predicted_rgb)
 
         # all of these metrics will be logged as scalars
         metrics_dict = {"psnr": float(psnr.item()), "ssim": float(ssim)}  # type: ignore
-        metrics_dict["lpips"] = float(lpips)
+        # metrics_dict["lpips"] = float(lpips)
         metrics_dict["max_depth"] = float(torch.max(outputs["depth"]))
         metrics_dict["min_depth"] = float(torch.min(outputs["depth"]))
 

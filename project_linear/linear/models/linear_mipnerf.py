@@ -17,16 +17,17 @@ Implementation of mip-NeRF.
 """
 from __future__ import annotations
 
-from typing import Type, Literal
+from typing import Type, Literal, Dict, List
 from dataclasses import dataclass, field
-
+from torch.nn import Parameter
+from nerfstudio.engine.callbacks import TrainingCallback, TrainingCallbackAttributes, TrainingCallbackLocation
 from nerfstudio.cameras.rays import RayBundle, RaySamples
 from nerfstudio.field_components.field_heads import FieldHeadNames
 from nerfstudio.models.vanilla_nerf import VanillaModelConfig
 from nerfstudio.models.mipnerf import MipNerfModel
 from nerfstudio.utils import colors
 from linear.model_components.renderers import LinearRGBRenderer
-from linear.model_components.ray_samplers import LinearPDFSampler
+from linear.model_components.ray_samplers import LinearPDFSampler, LinearUniformSampler
 from nerfstudio.model_components.ray_samplers import UniformSampler, PDFSampler
 from nerfstudio.fields.vanilla_nerf_field import NeRFField
 
@@ -41,6 +42,13 @@ class LinearMipNerfModelConfig(VanillaModelConfig):
     farcolorfix: bool = False
     include_original: bool = False
     use_same_field: bool = True
+    coarse_weight_anneal: bool = False 
+    coarse_weight_anneal_end_iteration: int = 100000
+    reverse_anneal: bool = False 
+    num_constant_iterations: int = -1
+    concat_walls: bool = True
+    use_constant_importance_sampling: bool = False
+    use_constant_aggregate_for_fine: bool = False
     
 
 
@@ -62,7 +70,10 @@ class LinearMipNerfModel(MipNerfModel):
         if config.num_importance_samples <= 0:
             config.loss_coefficients["rgb_loss_fine"] = 0.0
             config.loss_coefficients["rgb_loss_coarse"] = 1.0
+        
         super().__init__(config=config, **kwargs)
+        self.init_coarse_weight = config.loss_coefficients["rgb_loss_coarse"]
+        self.use_constant = config.num_constant_iterations > 0
 
     def populate_modules(self):
         """Set the fields and modules"""
@@ -75,11 +86,32 @@ class LinearMipNerfModel(MipNerfModel):
                 self.fine_field = NeRFField(
                     position_encoding=self.position_encoding, direction_encoding=self.direction_encoding, use_integrated_encoding=True
                 )
-            self.sampler_pdf = LinearPDFSampler(num_samples=self.config.num_importance_samples, include_original=self.config.include_original)
+            self.linear_sampler_pdf = LinearPDFSampler(num_samples=self.config.num_importance_samples, include_original=self.config.include_original, concat_walls=self.config.concat_walls)
+            self.sampler_pdf = PDFSampler(num_samples=self.config.num_importance_samples, include_original=self.config.include_original)
 
         # renderers
-        self.renderer_rgb = LinearRGBRenderer(background_color=colors.WHITE, color_mode=self.config.color_mode, farcolorfix=self.config.farcolorfix)
+        self.linear_renderer_rgb = LinearRGBRenderer(background_color=colors.WHITE, color_mode=self.config.color_mode, farcolorfix=self.config.farcolorfix, concat_walls=self.config.concat_walls)
 
+    def get_training_callbacks(self, training_callback_attributes: TrainingCallbackAttributes) -> List[TrainingCallback]:
+        cbs =  super().get_training_callbacks(training_callback_attributes)
+        if self.config.coarse_weight_anneal:
+            def set_coarse_weight(step):
+                final_coarse_weight = 0.1 if self.config.reverse_anneal else 1.0
+                slope = (final_coarse_weight - self.init_coarse_weight) / self.config.coarse_weight_anneal_end_iteration
+                self.config.loss_coefficients["rgb_loss_coarse"] = self.init_coarse_weight + slope * min(step, self.config.coarse_weight_anneal_end_iteration)
+            weight_cb = TrainingCallback(where_to_run=[TrainingCallbackLocation.BEFORE_TRAIN_ITERATION], update_every_num_iters=1, func=set_coarse_weight)
+            cbs.append(weight_cb)
+            
+        if self.config.num_constant_iterations > 0:
+            def toggle_constant(step):
+                self.use_constant = step < self.config.num_constant_iterations
+            toggle_constant_cb = TrainingCallback(where_to_run=[TrainingCallbackLocation.BEFORE_TRAIN_ITERATION], update_every_num_iters=1, func=toggle_constant)
+            cbs.append(toggle_constant_cb)
+        
+        return cbs
+            
+        
+        return cbs
     def get_param_groups(self) -> Dict[str, List[Parameter]]:
         param_groups = super().get_param_groups()
         if not self.config.use_same_field:
@@ -95,37 +127,70 @@ class LinearMipNerfModel(MipNerfModel):
         ray_samples_uniform = self.sampler_uniform(ray_bundle)
         # First pass:
         field_outputs_coarse = self.field.forward(ray_samples_uniform)
-        mid_points = (ray_samples_uniform.frustums.ends + ray_samples_uniform.frustums.starts) / 2.0
-        spacing_mid_points = (ray_samples_uniform.spacing_ends + ray_samples_uniform.spacing_starts) / 2.0
-        ray_samples_uniform_shifted = ray_bundle.get_ray_samples(
-            bin_starts=mid_points[:, :-1], 
-            bin_ends=mid_points[:, 1:], 
-            spacing_starts=spacing_mid_points[:, :-1], 
-            spacing_ends=spacing_mid_points[:, 1:], 
-            spacing_to_euclidean_fn=ray_samples_uniform.spacing_to_euclidean_fn,
-            sample_method="piecewise_linear")
-        weights_coarse, densities_coarse, transmittance_coarse = ray_samples_uniform_shifted.get_weights_linear(field_outputs_coarse[FieldHeadNames.DENSITY])
-        rgb_coarse = self.renderer_rgb(
-            rgb=field_outputs_coarse[FieldHeadNames.RGB],
-            weights=weights_coarse,
-        )
+        if not self.use_constant:
+            mid_points = (ray_samples_uniform.frustums.ends + ray_samples_uniform.frustums.starts) / 2.0
+            spacing_mid_points = (ray_samples_uniform.spacing_ends + ray_samples_uniform.spacing_starts) / 2.0
+            ray_samples_uniform_shifted = ray_bundle.get_ray_samples(
+                bin_starts=mid_points[:, :-1], 
+                bin_ends=mid_points[:, 1:], 
+                spacing_starts=spacing_mid_points[:, :-1], 
+                spacing_ends=spacing_mid_points[:, 1:], 
+                spacing_to_euclidean_fn=ray_samples_uniform.spacing_to_euclidean_fn,
+                sample_method="piecewise_linear")
+            ray_samples_uniform = ray_samples_uniform_shifted
+            
+            weights_coarse, densities_coarse, transmittance_coarse = ray_samples_uniform.get_weights_linear(field_outputs_coarse[FieldHeadNames.DENSITY], concat_walls=self.config.concat_walls)
+            rgb_coarse = self.linear_renderer_rgb(
+                rgb=field_outputs_coarse[FieldHeadNames.RGB],
+                weights=weights_coarse,
+            )
+        else:
+            weights_coarse = ray_samples_uniform.get_weights(field_outputs_coarse[FieldHeadNames.DENSITY])
+            rgb_coarse = self.renderer_rgb(
+                rgb=field_outputs_coarse[FieldHeadNames.RGB],
+                weights=weights_coarse,
+            )
+            
         accumulation_coarse = self.renderer_accumulation(weights_coarse)
         depth_coarse = self.renderer_depth(weights_coarse, ray_samples_uniform)
+            
         
         # pdf sampling
         if self.config.num_importance_samples > 0:
-            ray_samples_pdf = self.sampler_pdf(ray_bundle, ray_samples_uniform_shifted, weights_coarse, densities_coarse, transmittance_coarse)
-
+            if not (self.use_constant or self.config.use_constant_importance_sampling):
+                ray_samples_pdf = self.linear_sampler_pdf(ray_bundle, ray_samples_uniform, weights_coarse, densities_coarse, transmittance_coarse)
+            else:
+                ray_samples_pdf = self.sampler_pdf(ray_bundle, ray_samples_uniform, weights_coarse)
+                
             # Second pass:
             if not self.config.use_same_field:
                 field_outputs_fine = self.fine_field.forward(ray_samples_pdf)
             else:
                 field_outputs_fine = self.field.forward(ray_samples_pdf)
-            weights_fine, _, _ = ray_samples_pdf.get_weights_linear(field_outputs_fine[FieldHeadNames.DENSITY])
-            rgb_fine = self.renderer_rgb(
-                rgb=field_outputs_fine[FieldHeadNames.RGB],
-                weights=weights_fine,
-            )
+                
+            if not (self.use_constant or self.config.use_constant_aggregate_for_fine):
+                mid_points = (ray_samples_pdf.frustums.ends + ray_samples_pdf.frustums.starts) / 2.0
+                spacing_mid_points = (ray_samples_pdf.spacing_ends + ray_samples_pdf.spacing_starts) / 2.0
+                pdf_ray_samples_shifted = ray_bundle.get_ray_samples(
+                    bin_starts=mid_points[:, :-1], 
+                    bin_ends=mid_points[:, 1:], 
+                    spacing_starts=spacing_mid_points[:, :-1], 
+                    spacing_ends=spacing_mid_points[:, 1:], 
+                    spacing_to_euclidean_fn=ray_samples_pdf.spacing_to_euclidean_fn,
+                    sample_method="piecewise_linear")
+                ray_samples_pdf = pdf_ray_samples_shifted
+                weights_fine, _, _ = ray_samples_pdf.get_weights_linear(field_outputs_fine[FieldHeadNames.DENSITY], concat_walls=self.config.concat_walls)
+                
+                rgb_fine = self.linear_renderer_rgb(
+                    rgb=field_outputs_fine[FieldHeadNames.RGB],
+                    weights=weights_fine,
+                )
+            else:
+                weights_fine = ray_samples_pdf.get_weights(field_outputs_fine[FieldHeadNames.DENSITY])
+                rgb_fine = self.renderer_rgb(
+                    rgb=field_outputs_fine[FieldHeadNames.RGB],
+                    weights=weights_fine,
+                )
             accumulation_fine = self.renderer_accumulation(weights_fine)
             depth_fine = self.renderer_depth(weights_fine, ray_samples_pdf)
         else:

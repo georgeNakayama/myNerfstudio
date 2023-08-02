@@ -63,6 +63,8 @@ class SparseScannetDataParserConfig(DataParserConfig):
     """How much to scale the camera origins by."""
     scene_scale: float = 1.0
     """How much to scale the region of interest by."""
+    use_mask: bool = False
+    """whether to use mask for training"""
 
 
 @dataclass
@@ -75,6 +77,7 @@ class SparseScannet(DataParser):
     all_poses: Optional[Dict[str, torch.Tensor]] = None 
     all_image_filenames: Optional[Dict[str, List[Path]]] = None
     all_depth_filenames: Optional[Dict[str, List[Path]]] = None
+    all_mask_filenames: Optional[Dict[str, List[Path]]] = None
     depth_unit_scale_factor: float = 1e-3
     transform_matrix: Optional[torch.Tensor] = None
     hwcxcyfxfy: Optional[Tuple[int, int, float, float, float, float]] = None
@@ -88,6 +91,7 @@ class SparseScannet(DataParser):
         self.test_json_name: str = config.test_json_name
         self.scale_factor: float = config.scale_factor
         self.scene_scale: float = config.scene_scale
+        self.use_mask: bool=config.use_mask
         self.setup()
         
     def setup(self):
@@ -95,6 +99,7 @@ class SparseScannet(DataParser):
         all_poses = defaultdict(list)
         all_image_filenames = defaultdict(list)
         all_depth_filenames = defaultdict(list)
+        all_mask_filenames = defaultdict(list)
         CONSOLE.print(f"[green]Loading metadata from {str((self.data))} for all splits...")
         for s, name in json_dict.items():
             meta = load_from_json(self.data / Path(name))
@@ -102,8 +107,10 @@ class SparseScannet(DataParser):
             for frame in meta["frames"]:
                 fname = self.data / Path(frame["file_path"].replace("./", ""))
                 depth_fname = self.data / Path(frame["depth_file_path"].replace("./", ""))
+                mask_fname = self.data / Path(frame["mask_file_path"].replace("./", ""))
                 all_image_filenames[s].append(fname)
                 all_depth_filenames[s].append(depth_fname)
+                all_mask_filenames[s].append(mask_fname)
                 all_poses[s].append(np.array(frame["transform_matrix"]))
         all_poses = {k: np.array(poses).astype(np.float32) for k, poses in all_poses.items()}
         all_poses = {k: torch.from_numpy(poses) for k, poses in all_poses.items()}
@@ -142,19 +149,20 @@ class SparseScannet(DataParser):
         )
         
         coords_grid = all_cameras.get_image_coords()
-        bd_coords = torch.stack([coords_grid[0, 0],coords_grid[0, -1],coords_grid[-1, 0], coords_grid[-1, -1]], dim=0).repeat(all_poses.shape[0], 1)
+        bd_coords = torch.stack([coords_grid[0, 0], coords_grid[0, -1], coords_grid[-1, 0], coords_grid[-1, -1]], dim=0).repeat(all_poses.shape[0], 1)
         bd_rays = all_cameras.generate_rays(torch.arange(all_poses.shape[0]).unsqueeze(1).repeat_interleave(4, dim=0).reshape(-1, 1), bd_coords)
         aabb_scale = self.scene_scale
         boundaries = bd_rays.origins.repeat(2, 1) + bd_rays.directions.repeat(2, 1) * bds.repeat_interleave(4, dim=0).transpose(0, 1).reshape(-1, 1)
         tight_bd_min, tight_bd_max = boundaries.min(0)[0], boundaries.max(0)[0]
         tight_bd_center = (tight_bd_min + tight_bd_max) / 2.0
         bd_min = tight_bd_min - (tight_bd_center - tight_bd_min) * 0.1
-        bd_max = tight_bd_max + (tight_bd_center - tight_bd_max) * 0.1
+        bd_max = tight_bd_max + (tight_bd_max - tight_bd_center) * 0.1
         CONSOLE.print(f"Bounds for the scene is {bd_min} and {bd_max}")
         self.scene_box = SceneBox(aabb=torch.stack([bd_min , bd_max], dim=0) * aabb_scale)
         self.transform_matrix = transform_matrix
         self.all_image_filenames = all_image_filenames
         self.all_depth_filenames = all_depth_filenames
+        self.all_mask_filenames = all_mask_filenames
         self.hwcxcyfxfy = (image_height, image_width, frame_0['cx'], frame_0['cy'], frame_0['fx'], frame_0['fy'])
         
     def _generate_dataparser_outputs(self, split="train"):
@@ -166,6 +174,7 @@ class SparseScannet(DataParser):
         split_poses = self.all_poses[split]
         split_image_filenames = self.all_image_filenames[split]
         split_depth_filenames = self.all_depth_filenames[split]
+        split_mask_filenames = self.all_mask_filenames[split]
         h, w, cx, cy, fx, fy = self.hwcxcyfxfy
         cameras = Cameras(
             camera_to_worlds=split_poses[:, :3, :4],
@@ -180,6 +189,7 @@ class SparseScannet(DataParser):
         
         dataparser_outputs = DataparserOutputs(
             image_filenames=split_image_filenames,
+            mask_filenames=split_mask_filenames if self.use_mask else None,
             cameras=cameras,
             dataparser_transform=self.transform_matrix,
             scene_box=self.scene_box,

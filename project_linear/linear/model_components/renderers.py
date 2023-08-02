@@ -14,10 +14,11 @@ class LinearRGBRenderer(RGBRenderer):
     Args:
         background_color: Background color as RGB. Uses random colors if None.
     """
-    def __init__(self, background_color: BackgroundColor = "random",  color_mode: Literal["left", "midpoint"]="midpoint", farcolorfix: bool = False) -> None:
+    def __init__(self, background_color: BackgroundColor = "random",  color_mode: Literal["left", "midpoint"]="midpoint", farcolorfix: bool = False, concat_walls: bool = True) -> None:
         super().__init__(background_color=background_color)
         self.color_mode=color_mode
         self.farcolorfix = farcolorfix
+        self.concat_walls=concat_walls
 
     def combine_rgb(
         self,
@@ -44,12 +45,14 @@ class LinearRGBRenderer(RGBRenderer):
             return super().combine_rgb(rgb, weights, background_color, ray_indices, num_rays)
         
         if self.color_mode == "midpoint":
-            if self.farcolorfix:
-                rgb = torch.cat([rgb[:, :1, :], rgb, torch.zeros(rgb[:, :1, :].shape, device=rgb.device)], dim=1)
-            else:
-                rgb = torch.cat([rgb[:, :1, :], rgb, rgb[:, -1:, :]], dim=1)
+            if self.concat_walls:
+                if self.farcolorfix:
+                    rgb = torch.cat([rgb[:, :1, :], rgb, torch.zeros(rgb[:, :1, :].shape, device=rgb.device)], dim=1)
+                else:
+                    rgb = torch.cat([rgb[:, :1, :], rgb, rgb[:, -1:, :]], dim=1)
             rgb = 0.5 * (rgb[:, 1:] + rgb[:, :-1])
         elif self.color_mode == "left":
-            rgb = torch.cat([rgb[:, :1, :], rgb], dim=1)
+            if self.concat_walls:
+                rgb = torch.cat([rgb[:, :1, :], rgb], dim=1)
             
         return RGBRenderer.combine_rgb(rgb, weights, background_color, ray_indices, num_rays)

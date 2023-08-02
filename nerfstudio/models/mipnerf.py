@@ -23,7 +23,7 @@ import torch
 from torch.nn import Parameter
 from torchmetrics.functional import structural_similarity_index_measure
 from torchmetrics.image import PeakSignalNoiseRatio
-from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
+# from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
 
 from nerfstudio.cameras.rays import RayBundle
 from nerfstudio.field_components.encodings import NeRFEncoding
@@ -91,7 +91,7 @@ class MipNerfModel(Model):
         # metrics
         self.psnr = PeakSignalNoiseRatio(data_range=1.0)
         self.ssim = structural_similarity_index_measure
-        self.lpips = LearnedPerceptualImagePatchSimilarity(normalize=True)
+        # self.lpips = LearnedPerceptualImagePatchSimilarity(normalize=True)
 
     def get_param_groups(self) -> Dict[str, List[Parameter]]:
         param_groups = {}
@@ -197,7 +197,7 @@ class MipNerfModel(Model):
         coarse_psnr = self.psnr(image, rgb_coarse)
         fine_psnr = self.psnr(image, rgb_fine)
         fine_ssim = self.ssim(image, rgb_fine)
-        fine_lpips = self.lpips(image, rgb_fine)
+        # fine_lpips = self.lpips(image, rgb_fine)
 
         assert isinstance(fine_ssim, torch.Tensor)
         metrics_dict = {
@@ -205,7 +205,7 @@ class MipNerfModel(Model):
             "coarse_psnr": float(coarse_psnr.item()),
             "fine_psnr": float(fine_psnr.item()),
             "fine_ssim": float(fine_ssim.item()),
-            "fine_lpips": float(fine_lpips.item()),
+            # "fine_lpips": float(fine_lpips.item()),
         }
         images_dict = {"img": combined_rgb, "accumulation": combined_acc, "depth": combined_depth}
         return metrics_dict, images_dict

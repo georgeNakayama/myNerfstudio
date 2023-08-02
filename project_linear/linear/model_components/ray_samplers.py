@@ -271,9 +271,10 @@ class LinearPDFSampler(PDFSampler):
         include_original: bool = True,
         histogram_padding: float = 0.01,
         add_end_bin: bool = False,
+        concat_walls: bool = True
     ) -> None:
         super().__init__(num_samples=num_samples, train_stratified=train_stratified, single_jitter=single_jitter, include_original=include_original, histogram_padding=histogram_padding, add_end_bin=False)
-
+        self.concat_walls=concat_walls
 
 
 
@@ -315,11 +316,9 @@ class LinearPDFSampler(PDFSampler):
         padding = torch.relu(eps - weights_sum)
         weights = weights + padding / weights.shape[-1]
         weights_sum += padding
-        if self.add_end_bin:
-            weights = torch.cat([weights, torch.relu(1 - weights_sum)], dim=-1)
         pdf = weights / weights.sum(dim=-1, keepdim=True)
         cdf = torch.min(torch.ones_like(pdf), torch.cumsum(pdf, dim=-1))
-        cdf = torch.cat([torch.zeros_like(cdf[..., :1]), cdf], dim=-1)
+        cdf = torch.cat([torch.zeros_like(cdf[..., :1]), cdf], dim=-1) # N + 3 (N + 1)
         if self.train_stratified and self.training:
             # Stratified samples between 0 and 1
             u = torch.linspace(0.0, 1.0 - (1.0 / num_bins), steps=num_bins, device=cdf.device)
@@ -340,14 +339,24 @@ class LinearPDFSampler(PDFSampler):
             ray_samples.spacing_starts is not None and ray_samples.spacing_ends is not None
         ), "ray_sample spacing_starts and spacing_ends must be provided"
         assert ray_samples.spacing_to_euclidean_fn is not None, "ray_samples.spacing_to_euclidean_fn must be provided"
-        existing_bins = torch.cat(
-            [
-                torch.zeros_like(ray_samples.spacing_starts[..., :1, 0]),
-                ray_samples.spacing_starts[..., 0],
-                ray_samples.spacing_ends[..., -1:, 0],
-            ],
-            dim=-1,
-        )
+        if self.concat_walls:
+            existing_bins = torch.cat(
+                [
+                    torch.zeros_like(ray_samples.spacing_starts[..., :1, 0]),
+                    ray_samples.spacing_starts[..., 0],
+                    ray_samples.spacing_ends[..., -1:, 0], 
+                    torch.ones_like(ray_samples.spacing_starts[..., :1, 0]), # N + 3
+                ],
+                dim=-1,
+            )
+        else:
+            existing_bins = torch.cat(
+                [
+                    ray_samples.spacing_starts[..., 0],
+                    ray_samples.spacing_ends[..., -1:, 0], 
+                ],
+                dim=-1,
+            )
         
 
         bins = pw_linear_sample_fn(cdf, existing_bins, u, densities, transmittance) 
@@ -380,7 +389,7 @@ class LinearProposalNetworkSampler(ProposalNetworkSampler):
         single_jitter: bool = False,
         update_sched: Callable = lambda x: 1,
         initial_sampler: Optional[Sampler] = None,
-        add_end_bin: bool = True
+        add_end_bin: bool = False
     ) -> None:
         super().__init__(
             num_proposal_samples_per_ray=num_proposal_samples_per_ray,
@@ -429,10 +438,10 @@ class LinearProposalNetworkSampler(ProposalNetworkSampler):
                 assert ray_samples is not None
                 if updated:
                     # always update on the first step or the inf check in grad scaling crashes
-                    density = density_fns[i_level](ray_samples.frustums.get_positions(), metadata=ray_samples.metadata)
+                    density = density_fns[i_level](ray_samples.frustums.get_positions())
                 else:
                     with torch.no_grad():
-                        density = density_fns[i_level](ray_samples.frustums.get_positions(), metadata=ray_samples.metadata)
+                        density = density_fns[i_level](ray_samples.frustums.get_positions())
                 weights, densities, transmittance = ray_samples.get_weights_linear(density)
                 weights_list.append(weights[:, 1:-1])  # (num_rays, num_samples)
                 ray_samples_list.append(ray_samples[:, :-1])
