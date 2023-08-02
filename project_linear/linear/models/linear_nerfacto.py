@@ -51,7 +51,7 @@ from nerfstudio.models.nerfacto import NerfactoModelConfig, NerfactoModel
 from nerfstudio.utils import colormaps
 from linear.model_components.renderers import LinearRGBRenderer
 from linear.model_components.ray_samplers import LinearPDFSampler, LinearUniformSampler, LinearProposalNetworkSampler
-
+from linear.fields.linear_nerfacto_field import LinearNerfactoField
 
 @dataclass
 class LinearNerfactoModelConfig(NerfactoModelConfig):
@@ -61,12 +61,9 @@ class LinearNerfactoModelConfig(NerfactoModelConfig):
     """target class to instantiate"""
     color_mode : Literal["midpoint", "left"] = "midpoint"
     farcolorfix: bool = False
-    proposal_initial_sampler="uniform"
-    disable_scene_contraction=True
-    num_proposal_samples_per_ray: Tuple[int, ...] = (256, 96)
-    """Number of samples per ray for each proposal network."""
-    num_nerf_samples_per_ray: int = 48
-    num_constant_iterations: int = 5000
+    num_constant_iterations: int = -1
+    concat_walls: bool = True
+    include_original: bool = False
     
 
 
@@ -95,21 +92,23 @@ class LinearNerfactoModel(NerfactoModel):
         # Change proposal network initial sampler if uniform
         initial_sampler = None  # None is for piecewise as default (see ProposalNetworkSampler)
         if self.config.proposal_initial_sampler == "uniform":
-            initial_sampler = LinearUniformSampler(single_jitter=self.config.use_single_jitter)
+            initial_sampler = UniformSampler(single_jitter=self.config.use_single_jitter)
 
-        self.linear_proposal_sampler = LinearProposalNetworkSampler(
+        self.linear_proposal_sampler = ProposalNetworkSampler(
             num_nerf_samples_per_ray=self.config.num_nerf_samples_per_ray,
             num_proposal_samples_per_ray=self.config.num_proposal_samples_per_ray,
             num_proposal_network_iterations=self.config.num_proposal_iterations,
             single_jitter=self.config.use_single_jitter,
             update_sched=update_schedule,
             initial_sampler=initial_sampler,
+            include_original=self.config.include_original
         )
 
         # renderers
-        self.linear_renderer_rgb = LinearRGBRenderer(background_color=self.config.background_color)
+        self.linear_renderer_rgb = LinearRGBRenderer(background_color=self.config.background_color, concat_walls=self.config.concat_walls)
         self.use_constant = self.config.num_constant_iterations > 0
 
+        print(self)
 
     
     def get_training_callbacks(
@@ -127,17 +126,11 @@ class LinearNerfactoModel(NerfactoModel):
     def get_outputs(self, ray_bundle: RayBundle, return_samples:bool=False, **kwargs):
         ray_samples: RaySamples
         if self.use_constant:
-            outs = self.proposal_sampler(ray_bundle, density_fns=self.density_fns)
+            ray_samples, weights_list, ray_samples_list = self.proposal_sampler(ray_bundle, density_fns=self.density_fns)
         else:
-            outs = self.linear_proposal_sampler(ray_bundle, density_fns=self.density_fns)
+            ray_samples, weights_list, ray_samples_list = self.linear_proposal_sampler(ray_bundle, density_fns=self.density_fns)
 
-        if len(outs) == 3:
-            ray_samples, weights_list, ray_samples_list = outs
-        elif len(outs) == 4:
-            ray_samples, weights_list, ray_samples_list, metric_dict_list = outs
-        else:
-            raise AssertionError
-
+        ray_samples.frustums.sample_method = "piecewise_linear"
         field_outputs = self.field.forward(ray_samples, compute_normals=self.config.predict_normals)
         if self.config.use_gradient_scaling:
             field_outputs = scale_gradients_by_distance_squared(field_outputs, ray_samples)
@@ -147,15 +140,16 @@ class LinearNerfactoModel(NerfactoModel):
             weights_list.append(weights)
             ray_samples_list.append(ray_samples)
         else:
-            print("11111111")
-            weights, _, _ = ray_samples.get_weights_linear(field_outputs[FieldHeadNames.DENSITY])
-            weights_list.append(weights[:, 1:-1])
-            ray_samples_list.append(ray_samples[:, :-1])
+            weights, _, _ = ray_samples.get_weights_linear(field_outputs[FieldHeadNames.DENSITY], concat_walls=self.config.concat_walls)
+            if self.config.concat_walls:
+                weights_list.append(weights[..., 1:-1, :])
+            else:
+                weights_list.append(weights)
+            ray_samples_list.append(ray_samples)
 
         if self.use_constant:
             rgb = self.renderer_rgb(rgb=field_outputs[FieldHeadNames.RGB], weights=weights)
         else:
-            print("11111111")
             rgb = self.linear_renderer_rgb(rgb=field_outputs[FieldHeadNames.RGB], weights=weights)
             
         depth = self.renderer_depth(weights=weights, ray_samples=ray_samples)
@@ -190,8 +184,4 @@ class LinearNerfactoModel(NerfactoModel):
 
         for i in range(self.config.num_proposal_iterations):
             outputs[f"prop_depth_{i}"] = self.renderer_depth(weights=weights_list[i], ray_samples=ray_samples_list[i])
-        if return_samples:
-            outputs["weights_dict"] = dict(zip([f"prop_depth_{i}" for i in range(self.config.num_proposal_iterations)] + ["depth"], weights_list))
-            outputs["ray_samples_dict"] = dict(zip([f"prop_depth_{i}" for i in range(self.config.num_proposal_iterations)] + ["depth"], ray_samples_list))
-
         return outputs

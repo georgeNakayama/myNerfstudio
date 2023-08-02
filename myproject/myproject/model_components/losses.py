@@ -37,6 +37,23 @@ def gaussian_log_prob(z, mean: float = 0.0, variance: float = 1, dim: int=3) -> 
     main_diff = (z - mean).pow(2) / (2. * variance)
     log_prob =  -main_diff - 0.5 * torch.log(variance) - 0.5 * dim * math.log(2 * math.pi)
     return log_prob
+
+def log_normal_log_prob(z, mean: float = 0.0, variance: float = 1, dim: int=3) -> Tensor:
+    """Return the gaussian probability of z under N(mean, variance)
+        e^-x / (1 + e^-x)^2
+    """
+    gauss_log_prob = gaussian_log_prob(z, mean, variance, dim=dim)
+    return gauss_log_prob - z
+
+def logistic_normal_log_prob(z, mean: float = 0.0, variance: float = 1, dim: int=3) -> Tensor:
+    """Return the gaussian probability of z under N(mean, variance)
+        e^-x / (1 + e^-x)^2
+    """
+    gauss_log_prob = gaussian_log_prob(z, mean, variance, dim=dim)
+    one_p_e_neg_z = 1.0 + torch.exp(-1.0 * z)
+    neg_dsigmoid_dz = 2.0 * torch.log(one_p_e_neg_z) + z
+    log_prob = gauss_log_prob + neg_dsigmoid_dz
+    return log_prob
         
     
 def gaussian_entropy(logvar, dim = 3) -> Tensor:
@@ -46,18 +63,18 @@ def gaussian_entropy(logvar, dim = 3) -> Tensor:
     return entropy
 
 
-def logistic_normal_entropy(samples, mean, logvar, dim = 3) -> Tensor:
-    # we upper bound the entropy and minimize the uppder bound 
-    # the upper bound is given by logistic normal entropy <= gaussian entropy - int_R |x|P_N(x)dx
-    assert samples.shape[-1] == mean.shape[-1] == logvar.shape[-1] == dim
-    gauss_entropy = gaussian_entropy(logvar, dim=dim)
-    variance = trunc_exp(logvar)
-    std = trunc_exp(0.5 * logvar)
-    exponent = mean / (math.sqrt(2.) * std)
-    second_term = 2. * variance * trunc_exp(-1.0 * exponent * exponent) + math.sqrt(math.pi / 2.) * mean * std * torch.erf(exponent)
-    entropy = gauss_entropy - second_term.sum(-1)
-    return entropy
+def logistic_normal_entropy(mean, logvar, samples = 1, dim = 3) -> Tensor:
+    # we evaluate stochastically
+    randn = torch.randn_like(mean.unsqueeze(-2).repeat_interleave(samples, dim=-2))
+    samples = mean.unsqueeze(-2) + randn * trunc_exp(logvar * 0.5).unsqueeze(-2)
+    logit_normal_log_prob = logistic_normal_log_prob(samples, mean.unsqueeze(-2), trunc_exp(logvar).unsqueeze(-2), dim=dim).sum(-1)
+    # print(logvar.min(), logvar.max(), logit_normal_log_prob.max(), logit_normal_log_prob.min())
+    finite_mask = torch.isfinite(logit_normal_log_prob)
+    logit_normal_log_prob = torch.nan_to_num(logit_normal_log_prob, 0.0, 0.0, 0.0)
+    logit_normal_log_prob = logit_normal_log_prob.sum(-1) / finite_mask.sum(-1)
+    return - logit_normal_log_prob
 
-def log_normal_entropy(samples, mean, logvar, dim=3) -> Tensor:
+def log_normal_entropy(mean, logvar, dim=3) -> Tensor:
     gauss_entropy = gaussian_entropy(logvar, dim=dim)
+    # print(logvar.min(), logvar.max())
     return gauss_entropy + mean.sum(-1)

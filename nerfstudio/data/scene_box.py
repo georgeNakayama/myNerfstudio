@@ -33,6 +33,15 @@ class SceneBox:
     aabb[0] is the minimum (x,y,z) point.
     aabb[1] is the maximum (x,y,z) point."""
 
+    @staticmethod
+    def sample_uniform_points(res:int, aabb: Float[Tensor, "2 3"]):
+        diffs = aabb[1] - aabb[0]
+        x, y, z = torch.meshgrid(torch.arange(res), torch.arange(res), torch.arange(res), indexing="ij")
+        grid = torch.stack([x, y, z], dim=-1).to(aabb)
+        deltas = diffs.reshape(1, 1, 1, 3) / res # [res, res, res, 3]
+        samples = (torch.rand([res, res, res, 3]).to(aabb) + grid) * deltas
+        return samples
+
     def get_diagonal_length(self):
         """Returns the longest diagonal length."""
         diff = self.aabb[1] - self.aabb[0]

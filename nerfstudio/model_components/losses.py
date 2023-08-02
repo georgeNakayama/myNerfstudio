@@ -40,9 +40,10 @@ DEPTH_METRIC = 1
 
 class DepthLossType(Enum):
     """Types of depth losses for depth supervision."""
-
     DS_NERF = 1
     URF = 2
+    STOCHASTIC_NERF = 3
+    
 
 
 def outer(
@@ -239,7 +240,6 @@ def ds_nerf_depth_loss(
     loss = -torch.log(weights + EPS) * trunc_exp(-((steps - termination_depth.unsqueeze(-2)) ** 2) / (2 * sigma)) * lengths
     loss = loss.sum(-2) * depth_mask
     return torch.mean(loss)
-
 
 def urban_radiance_field_depth_loss(
     weights: Float[Tensor, "*batch num_samples 1"],

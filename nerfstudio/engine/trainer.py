@@ -257,6 +257,11 @@ class Trainer:
             callback.run_callback_at_location(step=self._start_step, location=TrainingCallbackLocation.BEFORE_TRAIN)
             
         self._init_viewer_state()
+        if self.pipeline.datamanager.test_dataset:
+            with self.ema.average_parameters() if self.config.use_ema else nullcontext():
+                self.test_iteration(self._start_step, force_run=self.config.run_test_at_zero_iter)
+        
+        
         with TimeWriter(writer, EventName.TOTAL_TRAIN_TIME):
             num_iterations = self.config.max_num_iterations
             step = 0
@@ -322,7 +327,10 @@ class Trainer:
                     writer.put_scalar(name=EventName.CURR_TRAIN_PSNR, scalar=metrics_dict["psnr"], step=step)
                     group = "Train Images"
                     for image_name, image in images_dict.items():
-                        writer.put_image(name=group + "/" + image_name, image=image, step=step)
+                        if image.shape[-1] == 6:
+                            writer.put_pcd(name=group + "/" + image_name, asset=image, step=step)
+                        elif image.shape[-1] == 3:
+                            writer.put_image(name=group + "/" + image_name, image=image, step=step)
 
                 # Do not perform evaluation if there are no validation images
                 if self.pipeline.datamanager.eval_dataset:
@@ -393,7 +401,10 @@ class Trainer:
             group = "Test Images"
             
             for image_name, image in images_dict.items():
-                writer.put_image(name=group + "/" + image_name, image=image, step=step)
+                if image.shape[-1] == 6:
+                    writer.put_pcd(name=group + "/" + image_name, asset=image, step=step)
+                elif image.shape[-1] == 3:
+                    writer.put_image(name=group + "/" + image_name, image=image, step=step)
             writer.write_out_storage()
 
     @check_viewer_enabled
@@ -595,7 +606,10 @@ class Trainer:
             writer.put_scalar(name=EventName.CURR_TEST_PSNR, scalar=metrics_dict["psnr"], step=step)
             group = "Eval Images"
             for image_name, image in images_dict.items():
-                writer.put_image(name=group + "/" + image_name, image=image, step=step)
+                if image.shape[-1] == 6:
+                    writer.put_pcd(name=group + "/" + image_name, asset=image, step=step)
+                elif image.shape[-1] == 3:
+                    writer.put_image(name=group + "/" + image_name, image=image, step=step)
 
         # all eval images
         if step_check(step, self.config.steps_per_eval_all_images):
@@ -614,9 +628,13 @@ class Trainer:
         """
 
         # all test images
-        if step_check(step, self.config.steps_per_test_all_images, run_at_zero=self.config.run_test_at_zero_iter) or force_run:
+        if step_check(step, self.config.steps_per_test_all_images, run_at_zero=False) or force_run:
             metrics_dict, images_dict = self.pipeline.get_average_test_images_and_metrics(step=step)
             writer.put_dict(name="Test Images Metrics Dict (all images)", scalar_dict=metrics_dict, step=step)
             group = "Test Images"
-            for image_name, image in images_dict.items():
-                writer.put_image(name=group + "/" + image_name, image=image, step=step)
+            for image_name, image_list in images_dict.items():
+                if image_list[0].shape[-1] == 6:
+                    writer.put_pcd(name=group + "/" + image_name, asset=image_list, step=step)
+                elif image_list[0].shape[-1] == 3:
+                    writer.put_image(name=group + "/" + image_name, image=image_list, step=step)
+                    

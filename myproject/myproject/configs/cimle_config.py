@@ -52,7 +52,9 @@ stochastic_nerfacto = MethodSpecification(
             num_nerf_samples_per_ray=256,
             entropy_mult=0.01,
             disable_scene_contraction=True,
-            use_aabb_collider=True,
+            use_aabb_collider=False,
+            near_plane=0.10000000149011612,
+            far_plane=4.03849983215332,
             add_end_bin=True,
             is_euclidean_depth=True,
             depth_loss_mult=1,
@@ -60,15 +62,19 @@ stochastic_nerfacto = MethodSpecification(
     ),
     optimizers={
         "fields": {
-            "optimizer": AdamaxOptimizerConfig(lr=1e-3, eps=1e-15, max_norm=10),
+            "optimizer": AdamaxOptimizerConfig(lr=5e-4, eps=1e-15, max_norm=10),
             "scheduler": ExponentialDecaySchedulerConfig(lr_final=0.0001, max_steps=60000),
         },
-        "valid_param_groups": ValidParamGroupsConfig(valid_pgs=["fields", "camera_opt"])
+        "proposal_networks": {
+            "optimizer": AdamaxOptimizerConfig(lr=1e-3, eps=1e-15),
+            "scheduler": ExponentialDecaySchedulerConfig(lr_final=0.0001, max_steps=60000),
+        },
+        "valid_param_groups": ValidParamGroupsConfig(valid_pgs=["fields", "camera_opt", "proposal_networks"])
     },
     viewer=ViewerConfig(num_rays_per_chunk=1 << 10),
     vis="wandb",
     ),
-    description="stochastic nerfacto model pretraining"
+    description="stochastic nerfacto model"
 )
 
 

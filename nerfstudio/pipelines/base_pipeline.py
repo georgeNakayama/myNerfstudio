@@ -331,7 +331,7 @@ class VanillaPipeline(Pipeline):
         """
         self.eval()
         ray_bundle, batch = self.datamanager.next_eval(step)
-        model_outputs = self.model(ray_bundle, sample_latent=True)
+        model_outputs = self.model(ray_bundle)
         metrics_dict = self.model.get_metrics_dict(model_outputs, batch)
         loss_dict = self.model.get_loss_dict(model_outputs, batch, metrics_dict)
         self.train()
@@ -518,9 +518,9 @@ class VanillaPipeline(Pipeline):
             assert self.datamanager.fixed_indices_train_dataloader is not None 
             assert self.datamanager.fixed_indices_eval_dataloader is not None 
             assert self.datamanager.fixed_indices_test_dataloader is not None 
-            all_train_views = torch.stack([batch['image'] for _, batch in self.datamanager.fixed_indices_train_dataloader], dim=0)
-            all_val_views = torch.stack([batch['image'] for _, batch in self.datamanager.fixed_indices_eval_dataloader], dim=0)
-            all_test_views = torch.stack([batch['image'] for _, batch in self.datamanager.fixed_indices_test_dataloader], dim=0)
+            all_train_views = [batch['image'] for _, batch in self.datamanager.fixed_indices_train_dataloader]
+            all_val_views = [batch['image'] for _, batch in self.datamanager.fixed_indices_eval_dataloader]
+            all_test_views = [batch['image'] for _, batch in self.datamanager.fixed_indices_test_dataloader]
             writer.put_image(name="all_train_views", image=all_train_views, step=step)
             writer.put_image(name="all_val_views", image=all_val_views, step=step)
             writer.put_image(name="all_test_views", image=all_test_views, step=step)

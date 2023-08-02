@@ -46,7 +46,7 @@ class Field(nn.Module):
         self._density_before_activation = None
 
     def density_fn(
-        self, positions: Shaped[Tensor, "*bs 3"], times: Optional[Shaped[Tensor, "*bs 1"]] = None, metadata: Optional[Dict[str, Tensor]] = None
+        self, positions: Shaped[Tensor, "*bs 3"], times: Optional[Shaped[Tensor, "*bs 1"]] = None
     ) -> Shaped[Tensor, "*bs 1"]:
         """Returns only the density. Used primarily with the density grid.
 
@@ -55,10 +55,6 @@ class Field(nn.Module):
         """
         del times
         # Need to figure out a better way to describe positions with a ray.
-        metadata_dict = dict() 
-        if metadata is not None and "cimle_latent" in metadata.keys():
-            metadata_dict["cimle_latent"] = metadata["cimle_latent"]
-            
         ray_samples = RaySamples(
             frustums=Frustums(
                 origins=positions,
@@ -66,8 +62,7 @@ class Field(nn.Module):
                 starts=torch.zeros_like(positions[..., :1]),
                 ends=torch.zeros_like(positions[..., :1]),
                 pixel_area=torch.ones_like(positions[..., :1]),
-            ),
-            metadata=metadata_dict
+            )
         )
         density, _ = self.get_density(ray_samples)
         return density

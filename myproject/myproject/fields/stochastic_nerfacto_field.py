@@ -22,6 +22,7 @@ from typing import Dict, Literal, Optional, Tuple
 import torch
 from torch import Tensor, nn
 import torch.nn.functional as F
+import math
 from nerfstudio.cameras.rays import RaySamples
 from nerfstudio.data.scene_box import SceneBox
 from nerfstudio.field_components.activations import trunc_exp
@@ -39,7 +40,7 @@ from nerfstudio.field_components.mlp import MLP
 from nerfstudio.field_components.spatial_distortions import SpatialDistortion
 from nerfstudio.fields.base_field import Field, get_normalized_directions
 from nerfstudio.fields.nerfacto_field import NerfactoField
-from myproject.model_components.losses import neg_nll_loss, gaussian_entropy, log_normal_entropy, logistic_normal_entropy
+from myproject.model_components.losses import neg_nll_loss, gaussian_entropy, log_normal_entropy, logistic_normal_entropy, log_normal_log_prob, logistic_normal_log_prob
 
 
 class StochasticNerfactoField(NerfactoField):
@@ -95,7 +96,9 @@ class StochasticNerfactoField(NerfactoField):
         use_pred_normals: bool = False,
         use_average_appearance_embedding: bool = False,
         spatial_distortion: Optional[SpatialDistortion] = None,
+        use_gaussian_ent: bool = True,
         implementation: Literal["tcnn", "torch"] = "tcnn",
+        compute_kl: bool = False
     ) -> None:
         super().__init__(
             aabb, 
@@ -124,6 +127,18 @@ class StochasticNerfactoField(NerfactoField):
             )
 
         self.stochastic_samples=stochastic_samples
+        self.use_gaussian_ent=use_gaussian_ent
+        self.compute_kl=compute_kl
+        self.global_rgb_mean = nn.Parameter(torch.zeros(3).to(torch.float32), requires_grad=True)
+        self.global_rgb_std = 3
+        self.global_rgb_logvar = math.log(self.global_rgb_std) * 2
+        self.global_density_std = 3
+        self.global_density_logvar = math.log(self.global_density_std) * 2
+        self.global_density_mean = nn.Parameter(torch.zeros(1).to(torch.float32), requires_grad=True)
+        # global_rgb_mean.requires_grad = True
+        # global_density_mean.requires_grad = True
+        # self.register_buffer("global_rgb_mean", global_rgb_mean)
+        # self.register_buffer("global_density_mean", global_density_mean)
         
         self.mlp_base_grid = HashEncoding(
             num_levels=num_levels,
@@ -183,7 +198,7 @@ class StochasticNerfactoField(NerfactoField):
         )
 
 
-    def forward(self, ray_samples: RaySamples, compute_normals: bool = False) -> Dict[FieldHeadNames, Tensor]:
+    def forward(self, ray_samples: RaySamples, compute_normals: bool = False, compute_global_entropy: bool = False) -> Dict[FieldHeadNames, Tensor]:
         """Evaluates the field at points along the ray.
 
         Args:
@@ -199,6 +214,11 @@ class StochasticNerfactoField(NerfactoField):
         field_outputs[FieldHeadNames.DENSITY] = density  # type: ignore
         field_outputs.update(density_dict)  # type: ignore
 
+        if compute_global_entropy:
+            res = 128
+            out_dict = self.get_global_entropy(res=res, device=density_embedding.device)
+            field_outputs.update(out_dict)
+
         if compute_normals:
             with torch.enable_grad():
                 normals = self.get_normals()
@@ -206,8 +226,73 @@ class StochasticNerfactoField(NerfactoField):
         return field_outputs
     
 
+    def get_global_entropy(self, res: int, device:str) -> Tuple[Tensor, Dict[str, Tensor], Tensor]:
+        """Computes and returns the densities."""
+        out_dict = dict()
+        positions = SceneBox.sample_uniform_points(res, torch.tensor([[0, 0, 0], [1,1, 1]]).to(device).to(torch.float32)) # [512, 512, 512, 3]
+        uniform_direction = torch.randn([res, res, res, 3]).to(device)
+        uniform_direction = F.normalize(uniform_direction, dim=-1)
+        directions_flat = get_normalized_directions(uniform_direction).view(-1, 3)
+        d = self.direction_encoding(directions_flat)
+        # Make sure the tcnn gets inputs between 0 and 1.
+        selector = ((positions > 0.0) & (positions < 1.0)).all(dim=-1)
+        positions = positions * selector[..., None]
+        positions_flat = positions.view(-1, 3)
+        h = self.mlp_base_grid(positions_flat)
+        h = self.mlp_base_mlp(h).view(res, res, res, -1)
+        
+        density_before_activate_mean, density_before_activate_logvar, base_mlp_out = torch.split(h, [1, 1, self.geo_feat_dim], dim=-1)
+        if self.use_gaussian_ent:
+            density_entropy = gaussian_entropy(density_before_activate_logvar, dim=1) 
+        else:
+            density_entropy = log_normal_entropy(density_before_activate_mean, density_before_activate_logvar, dim=1) 
+        out_dict["density_entropy"] = density_entropy
+        if self.compute_kl:
+            samples = density_before_activate_mean + torch.randn([res, res, res, 1]).to(positions) * trunc_exp(0.5 * density_before_activate_logvar)
+            log_prob_p = log_normal_log_prob(samples, self.global_density_mean, self.global_density_std * self.global_density_std, dim=1)
+            density_kl = -1.0 * (density_entropy + log_prob_p)
+            out_dict["density_kl"] = density_kl
+            
+            
+        d = self.direction_encoding(directions_flat)
+        if self.appearance_embedding_dim > 0:
+            embedded_appearance = torch.ones(
+                        (res, res, res, self.appearance_embedding_dim), device=device
+                    ) * self.embedding_appearance.mean(dim=0)
+            h = torch.cat(
+                [
+                    d,
+                    base_mlp_out.view(-1, self.geo_feat_dim),
+                    embedded_appearance.view(-1, self.appearance_embedding_dim),
+                ],
+                dim=-1,
+            )
+        else:
+            h = torch.cat(
+                [d, base_mlp_out.view(-1, self.geo_feat_dim)],
+                dim=-1,
+            )
+        rgb_out = self.mlp_head(h).view(res, res, res, -1).to(uniform_direction)
+        rgb_mean, rgb_logvar = torch.split(rgb_out, 3, dim=-1)
+
+            
+        if self.use_gaussian_ent:
+            rgb_entropy = gaussian_entropy(rgb_logvar, dim=3)[..., None]
+        else:
+            rgb_entropy = logistic_normal_entropy(rgb_mean, rgb_logvar, dim=3)[..., None]
+        
+        out_dict["rgb_entropy"] = rgb_entropy
+        if self.compute_kl:
+            samples = rgb_mean + torch.randn([res, res, res, 3]).to(positions) * trunc_exp(0.5 * rgb_logvar)
+            log_prob_p = logistic_normal_log_prob(samples, self.global_rgb_mean, self.global_rgb_std * self.global_rgb_std, dim=3)
+            rgb_kl = -1.0 * (rgb_entropy + log_prob_p)
+            out_dict["rgb_kl"] = rgb_kl.mean(-1, keepdim=True)
+            
+        return out_dict
+
     def get_density(self, ray_samples: RaySamples) -> Tuple[Tensor, Dict[str, Tensor], Tensor]:
         """Computes and returns the densities."""
+        out_dict = {}
         if self.spatial_distortion is not None:
             positions = ray_samples.frustums.get_positions()
             positions = self.spatial_distortion(positions)
@@ -223,20 +308,35 @@ class StochasticNerfactoField(NerfactoField):
         positions_flat = positions.view(-1, 3)
         h = self.mlp_base_grid(positions_flat)
         h = self.mlp_base_mlp(h).view(*ray_samples.shape, -1)
-        density_before_activation_mean, density_before_activate_logvar, base_mlp_out = torch.split(h, [1, 1, self.geo_feat_dim], dim=-1)
+        density_before_activation_mean, density_before_activation_logvar, base_mlp_out = torch.split(h, [1, 1, self.geo_feat_dim], dim=-1)
         self._density_before_activation = density_before_activation_mean
 
         # Rectifying the density with an exponential is much more stable than a ReLU or
         # softplus, because it enables high post-activation (float32) density outputs
         # from smaller internal (float16) parameters.
-        density_before_activate_std = trunc_exp(0.5 * density_before_activate_logvar.to(positions))
+        density_before_activation_std = trunc_exp(0.5 * density_before_activation_logvar.to(positions))
         noise = torch.randn(list(ray_samples.shape) + [self.stochastic_samples, 1]).to(density_before_activation_mean)
-        density_before_activation_samples = density_before_activation_mean.unsqueeze(-2) + noise * density_before_activate_std.unsqueeze(-2)
+        density_before_activation_samples = density_before_activation_mean.unsqueeze(-2) + noise * density_before_activation_std.unsqueeze(-2)
         density_samples = trunc_exp(density_before_activation_samples)
         density_samples = density_samples * selector[..., None, None]
         density_samples = density_samples.transpose(-2, -3)
-        density_entropy = log_normal_entropy(density_samples, density_before_activation_mean, density_before_activate_logvar, dim=1) 
-        return density_samples, {"density_entropy": density_entropy[..., None], "density_std": density_before_activate_std, "density_mean": density_before_activation_mean}, base_mlp_out
+        if self.use_gaussian_ent:
+            density_entropy = gaussian_entropy(density_before_activation_logvar, dim=1)[..., None]
+        else:
+            density_entropy = log_normal_entropy(density_before_activation_mean, density_before_activation_logvar, dim=1)[..., None]
+        
+        out_dict["density_entropy"] = density_entropy
+        
+        if self.compute_kl:
+            global_samples = self.global_density_mean.reshape(1, 1, 1) + torch.randn(list(ray_samples.shape) + [1]).to(positions) * self.global_density_std
+            log_prob_p = log_normal_log_prob(density_before_activation_samples, self.global_density_mean, self.global_density_std*self.global_density_std, dim=1).mean(-2)
+            density_kl = -1.0 * (density_entropy + log_prob_p)
+            out_dict["density_kl"] = density_kl
+        
+        out_dict["density_std"] = density_before_activation_std
+        out_dict["density_mean"] = density_before_activation_mean
+        density_before_activation_mean = trunc_exp(density_before_activation_mean)
+        return density_samples, out_dict, base_mlp_out
 
     def get_outputs(
         self, ray_samples: RaySamples, density_embedding: Optional[Tensor] = None
@@ -318,8 +418,19 @@ class StochasticNerfactoField(NerfactoField):
         rgb_mean, rgb_logvar = torch.split(rgb_out, 3, dim=-1)
         noise = torch.randn(list(outputs_shape) + [self.stochastic_samples, 3]).to(rgb_mean)
         rgb_std = trunc_exp(rgb_logvar * 0.5).to(rgb_mean)
-        rgb_samples = F.sigmoid(rgb_mean.unsqueeze(-2) + noise * rgb_std.unsqueeze(-2))
-        rgb_entropy = logistic_normal_entropy(rgb_samples, rgb_mean, rgb_logvar, dim=3)
-        outputs.update({FieldHeadNames.RGB: rgb_samples.transpose(-2, -3), "rgb_std": rgb_std, "rgb_mean": rgb_mean, "rgb_entropy": rgb_entropy[..., None]})
+        pre_sigmoid_rgb_samples = rgb_mean.unsqueeze(-2) + noise * rgb_std.unsqueeze(-2)
+        rgb_samples = F.sigmoid(pre_sigmoid_rgb_samples)
+        if self.use_gaussian_ent:
+            rgb_entropy = gaussian_entropy(rgb_logvar, dim=3)[..., None]
+        else:
+            rgb_entropy = logistic_normal_entropy(rgb_mean, rgb_logvar, samples=self.stochastic_samples, dim=3)[..., None]
+        
+        if self.compute_kl:
+            log_prob_p = logistic_normal_log_prob(pre_sigmoid_rgb_samples, self.global_rgb_mean, self.global_rgb_std * self.global_rgb_std, dim=3).mean(-2)
+            rgb_kl = -1.0 * (rgb_entropy + log_prob_p)
+            outputs["rgb_kl"] = rgb_kl.mean(-1, keepdim=True)
+            
+        rgb_mean = F.sigmoid(rgb_mean)
+        outputs.update({FieldHeadNames.RGB: rgb_samples.transpose(-2, -3), "rgb_std": rgb_std, "rgb_mean": rgb_mean, "rgb_entropy": rgb_entropy})
 
         return outputs

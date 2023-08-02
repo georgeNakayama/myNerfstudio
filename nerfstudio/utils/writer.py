@@ -23,7 +23,7 @@ from abc import abstractmethod
 from pathlib import Path
 from time import time
 from typing import Any, Dict, List, Optional, Union
-
+import numpy as np
 import torch
 import wandb
 from jaxtyping import Float
@@ -67,12 +67,14 @@ class EventType(enum.Enum):
     IMAGES = "write_images"
     SCALAR = "write_scalar"
     TABLE = "write_table"
+    PCD = "write_pcd"
+    PCDS = "write_pcds"
     DICT = "write_scalar_dict"
     CONFIG = "write_config"
 
 
 @check_main_thread
-def put_image(name, image: Union[Float[Tensor, "H W C"], Float[Tensor, "B H W C"]], step: int):
+def put_image(name, image: Union[Float[Tensor, "H W 3"], List[Float[Tensor, "H W 3"]]], step: int):
     """Setter function to place images into the queue to be written out
 
     Args:
@@ -81,9 +83,33 @@ def put_image(name, image: Union[Float[Tensor, "H W C"], Float[Tensor, "B H W C"
     """
     if isinstance(name, EventName):
         name = name.value
-    EVENT_STORAGE.append({"name": name, "write_type": EventType.IMAGE if image.ndim == 3 else EventType.IMAGES, "event": image.detach().cpu(), "step": step})
+        
+        
+    if isinstance(image, list):
+        image = [im.detach().cpu().to(torch.float32) for im in image]
+    else:
+        image = image.detach().cpu().to(torch.float32)
+    EVENT_STORAGE.append({"name": name, "write_type": EventType.IMAGE if not isinstance(image, list) else EventType.IMAGES, "event": image, "step": step})
     
+@check_main_thread
+def put_pcd(name, asset: Union[Float[Tensor, "N 6"], List[Float[Tensor, "N 6"]]], step: int):
+    """Setter function to place images into the queue to be written out
+
+    Args:
+        image: image to write out
+        step: step associated with image
+    """
+    if isinstance(name, EventName):
+        name = name.value
+        
+    if isinstance(asset, list):
+        asset = [a.detach().cpu().numpy().astype(np.float32) for a in asset]
+    else:
+        asset = asset.detach().cpu().numpy().astype(np.float32)
+    EVENT_STORAGE.append({"name": name, "write_type": EventType.PCD if not isinstance(asset, list) else EventType.PCDS, "event": asset, "step": step})
     
+        
+
 @check_main_thread
 def put_images(name, image: Float[Tensor, "B H W C"], step: int):
     """Setter function to place images into the queue to be written out
@@ -266,6 +292,29 @@ class Writer:
             step: the time step to log
         """
         raise NotImplementedError
+    
+    @abstractmethod
+    def write_pcd(self, name: str, asset: Float[Tensor, "N C"], step: int) -> None:
+        """method to write out image
+
+        Args:
+            name: data identifier
+            image: rendered image to write
+            step: the time step to log
+        """
+        raise NotImplementedError
+    
+    
+    @abstractmethod
+    def write_pcds(self, name: str, asset: Float[Tensor, "B N C"], step: int) -> None:
+        """method to write out image
+
+        Args:
+            name: data identifier
+            image: rendered image to write
+            step: the time step to log
+        """
+        raise NotImplementedError
 
     @abstractmethod
     def write_scalar(self, name: str, scalar: Union[float, torch.Tensor], step: int) -> None:
@@ -335,9 +384,20 @@ class WandbWriter(Writer):
         image = torch.permute(image, (2, 0, 1))
         wandb.log({name: wandb.Image(image)}, step=step)
         
-    def write_images(self, name: str, images: Float[Tensor, "B H W C"], step: int) -> None:
-        images = torch.permute(images, (0, 3, 1, 2))
-        wandb.log({name: [wandb.Image(images[i]) for i in range(images.shape[0])]}, step=step)
+    def write_images(self, name: str, images: List[Float[Tensor, "H W C"]], step: int) -> None:
+        image_list = [wandb.Image(image.permute((2, 0, 1))) for image in images]
+        wandb.log({name: image_list}, step=step)
+        
+    def write_pcd(self, name: str, asset: Float[np.ndarray, "N 6"], step: int) -> None:
+        asset[..., 3:] = 255.0 * np.clip(asset[..., 3:], 0, 1)
+        wandb.log({name: wandb.Object3D(asset)}, step=step)
+        
+    def write_pcds(self, name: str, asset: List[Float[Tensor, "N 6"]], step: int) -> None:
+        assets = []
+        for a in asset:
+            a[..., 3:] = 255.0 * np.clip(a[..., 3:], 0, 1)
+            assets.append(wandb.Object3D(a))
+        wandb.log({name: assets}, step=step)
 
     def write_scalar(self, name: str, scalar: Union[float, torch.Tensor], step: int) -> None:
         wandb.log({name: scalar}, step=step)

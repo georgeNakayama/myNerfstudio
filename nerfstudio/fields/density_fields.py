@@ -17,12 +17,12 @@ Proposal network field.
 """
 
 
-from typing import Literal, Optional, Tuple
-
+from typing import Literal, Optional, Tuple, Dict
+from jaxtyping import Shaped
 import torch
 from torch import Tensor, nn
 
-from nerfstudio.cameras.rays import RaySamples
+from nerfstudio.cameras.rays import RaySamples, Frustums
 from nerfstudio.data.scene_box import SceneBox
 from nerfstudio.field_components.activations import trunc_exp
 from nerfstudio.field_components.encodings import HashEncoding
@@ -89,23 +89,24 @@ class HashMLPDensityField(Field):
         else:
             self.mlp_base_mlp = torch.nn.Linear(self.mlp_base_grid.get_out_dim(), 1)
 
-    def get_density(self, ray_samples: RaySamples) -> Tuple[Tensor, None]:
+    def get_density(self, positions: Shaped[Tensor, "*bs 3"]) -> Tuple[Tensor, None]:
         if self.spatial_distortion is not None:
-            positions = self.spatial_distortion(ray_samples.frustums.get_positions())
+            positions = self.spatial_distortion(positions)
             positions = (positions + 2.0) / 4.0
         else:
-            positions = SceneBox.get_normalized_positions(ray_samples.frustums.get_positions(), self.aabb)
+            positions = SceneBox.get_normalized_positions(positions, self.aabb)
+        pos_shape = positions.shape[:-1]
         # Make sure the tcnn gets inputs between 0 and 1.
         selector = ((positions > 0.0) & (positions < 1.0)).all(dim=-1)
         positions = positions * selector[..., None]
         positions_flat = positions.view(-1, 3)
         if not self.use_linear:
             density_before_activation = (
-                self.mlp_base_mlp(self.mlp_base_grid(positions_flat)).view(*ray_samples.frustums.shape, -1).to(positions)
+                self.mlp_base_mlp(self.mlp_base_grid(positions_flat)).view(*pos_shape, -1).to(positions)
             )
         else:
             x = self.mlp_base_grid(positions_flat).to(positions)
-            density_before_activation = self.mlp_base_mlp(x).view(*ray_samples.frustums.shape, -1)
+            density_before_activation = self.mlp_base_mlp(x).view(*pos_shape, -1)
 
         # Rectifying the density with an exponential is much more stable than a ReLU or
         # softplus, because it enables high post-activation (float32) density outputs
@@ -113,6 +114,17 @@ class HashMLPDensityField(Field):
         density = trunc_exp(density_before_activation)
         density = density * selector[..., None]
         return density, None
+
+    def density_fn(
+        self, positions: Shaped[Tensor, "*bs 3"], times: Optional[Shaped[Tensor, "*bs 1"]] = None
+    ) -> Shaped[Tensor, "*bs 1"]:
+        """Returns only the density. Used primarily with the density grid.
+
+        Args:
+            positions: the origin of the samples/frustums
+        """
+        density, _ = self.get_density(positions)
+        return density
 
     def get_outputs(self, ray_samples: RaySamples, density_embedding: Optional[Tensor] = None) -> dict:
         return {}
