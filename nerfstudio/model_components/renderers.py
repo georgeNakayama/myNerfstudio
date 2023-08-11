@@ -106,7 +106,7 @@ class RGBRenderer(nn.Module):
         if background_color == "random":
             # If background color is random, the predicted color is returned without blending,
             # as if the background color was black.
-            return comp_rgb
+            background_color = torch.rand_like(rgb[..., -1, :])
 
         elif background_color == "last_sample":
             # Note, this is only supported for non-packed samples.

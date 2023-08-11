@@ -101,10 +101,12 @@ class SparseScannet(DataParser):
             for frame in meta["frames"]:
                 fname = self.data / Path(frame["file_path"].replace("./", ""))
                 depth_fname = self.data / Path(frame["depth_file_path"].replace("./", ""))
-                mask_fname = self.data / Path(frame["mask_file_path"].replace("./", ""))
+                if "mask_file_path" in frame.keys():
+                    mask_fname = self.data / Path(frame["mask_file_path"].replace("./", ""))
+                    all_mask_filenames[s].append(mask_fname)
+                    
                 all_image_filenames[s].append(fname)
                 all_depth_filenames[s].append(depth_fname)
-                all_mask_filenames[s].append(mask_fname)
                 all_poses[s].append(np.array(frame["transform_matrix"]))
         all_poses = {k: np.array(poses).astype(np.float32) for k, poses in all_poses.items()}
         all_poses = {k: torch.from_numpy(poses) for k, poses in all_poses.items()}

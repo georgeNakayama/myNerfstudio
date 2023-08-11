@@ -96,9 +96,13 @@ class StochasticNerfactoField(NerfactoField):
         use_pred_normals: bool = False,
         use_average_appearance_embedding: bool = False,
         spatial_distortion: Optional[SpatialDistortion] = None,
-        use_gaussian_ent: bool = True,
+        use_gaussian_ent: bool = False,
         implementation: Literal["tcnn", "torch"] = "tcnn",
-        compute_kl: bool = False
+        compute_kl: bool = False,
+        deterministic_color: bool = False,
+        init_glob_density: float = -10,
+        global_density_std: float = 3,
+        global_rgb_std: float = 1
     ) -> None:
         super().__init__(
             aabb, 
@@ -129,14 +133,14 @@ class StochasticNerfactoField(NerfactoField):
         self.stochastic_samples=stochastic_samples
         self.use_gaussian_ent=use_gaussian_ent
         self.compute_kl=compute_kl
+        self.deterministic_color=deterministic_color
         self.global_rgb_mean = nn.Parameter(torch.zeros(3).to(torch.float32), requires_grad=True)
-        self.global_rgb_std = 3
+        self.global_rgb_std = global_rgb_std
         self.global_rgb_logvar = math.log(self.global_rgb_std) * 2
-        self.global_density_std = 3
+        self.global_density_std = global_density_std
         self.global_density_logvar = math.log(self.global_density_std) * 2
-        self.global_density_mean = nn.Parameter(torch.zeros(1).to(torch.float32), requires_grad=True)
+        self.global_density_mean = nn.Parameter(torch.ones(1).to(torch.float32) * init_glob_density, requires_grad=False)
         # global_rgb_mean.requires_grad = True
-        # global_density_mean.requires_grad = True
         # self.register_buffer("global_rgb_mean", global_rgb_mean)
         # self.register_buffer("global_density_mean", global_density_mean)
         
@@ -249,11 +253,13 @@ class StochasticNerfactoField(NerfactoField):
         out_dict["density_entropy"] = density_entropy
         if self.compute_kl:
             samples = density_before_activate_mean + torch.randn([res, res, res, 1]).to(positions) * trunc_exp(0.5 * density_before_activate_logvar)
-            log_prob_p = log_normal_log_prob(samples, self.global_density_mean, self.global_density_std * self.global_density_std, dim=1)
+            log_prob_p = log_normal_log_prob(samples, self.global_density_mean.to(positions), self.global_density_std * self.global_density_std, dim=1)
             density_kl = -1.0 * (density_entropy + log_prob_p)
             out_dict["density_kl"] = density_kl
             
-            
+        if self.deterministic_color:
+            return out_dict
+        
         d = self.direction_encoding(directions_flat)
         if self.appearance_embedding_dim > 0:
             embedded_appearance = torch.ones(
@@ -283,10 +289,13 @@ class StochasticNerfactoField(NerfactoField):
         
         out_dict["rgb_entropy"] = rgb_entropy
         if self.compute_kl:
-            samples = rgb_mean + torch.randn([res, res, res, 3]).to(positions) * trunc_exp(0.5 * rgb_logvar)
-            log_prob_p = logistic_normal_log_prob(samples, self.global_rgb_mean, self.global_rgb_std * self.global_rgb_std, dim=3)
-            rgb_kl = -1.0 * (rgb_entropy + log_prob_p)
-            out_dict["rgb_kl"] = rgb_kl.mean(-1, keepdim=True)
+            q_samples = rgb_mean + torch.randn([res, res, res, 3]).to(positions) * trunc_exp(0.5 * rgb_logvar)
+            p_samples = self.global_rgb_mean + torch.randn([res, res, res, 3]).to(positions) * self.global_rgb_std
+            log_prob_p = logistic_normal_log_prob(p_samples, self.global_rgb_mean, self.global_rgb_std * self.global_rgb_std, dim=3)
+            log_prob_q = logistic_normal_log_prob(q_samples, rgb_mean, trunc_exp(rgb_logvar), dim=3)
+            logr = log_prob_p - log_prob_q
+            rgb_kl = trunc_exp(logr) - 1 - logr
+            out_dict["rgb_kl"] = rgb_kl.mean(-2)
             
         return out_dict
 
@@ -328,8 +337,8 @@ class StochasticNerfactoField(NerfactoField):
         out_dict["density_entropy"] = density_entropy
         
         if self.compute_kl:
-            global_samples = self.global_density_mean.reshape(1, 1, 1) + torch.randn(list(ray_samples.shape) + [1]).to(positions) * self.global_density_std
-            log_prob_p = log_normal_log_prob(density_before_activation_samples, self.global_density_mean, self.global_density_std*self.global_density_std, dim=1).mean(-2)
+            global_samples = self.global_density_mean.reshape(1, 1, 1).to(positions) + torch.randn(list(ray_samples.shape) + [1]).to(positions) * self.global_density_std
+            log_prob_p = log_normal_log_prob(density_before_activation_samples, self.global_density_mean.to(positions), self.global_density_std*self.global_density_std, dim=1).mean(-2)
             density_kl = -1.0 * (density_entropy + log_prob_p)
             out_dict["density_kl"] = density_kl
         
@@ -416,19 +425,29 @@ class StochasticNerfactoField(NerfactoField):
             )
         rgb_out = self.mlp_head(h).view(*outputs_shape, -1).to(directions)
         rgb_mean, rgb_logvar = torch.split(rgb_out, 3, dim=-1)
-        noise = torch.randn(list(outputs_shape) + [self.stochastic_samples, 3]).to(rgb_mean)
         rgb_std = trunc_exp(rgb_logvar * 0.5).to(rgb_mean)
+        if self.deterministic_color:
+            noise = 0.0
+        else:
+            noise = torch.randn(list(outputs_shape) + [self.stochastic_samples, 3]).to(rgb_mean)
         pre_sigmoid_rgb_samples = rgb_mean.unsqueeze(-2) + noise * rgb_std.unsqueeze(-2)
         rgb_samples = F.sigmoid(pre_sigmoid_rgb_samples)
+        if self.deterministic_color:
+            outputs[FieldHeadNames.RGB] = rgb_samples.transpose(-2, -3)
+            return outputs
         if self.use_gaussian_ent:
             rgb_entropy = gaussian_entropy(rgb_logvar, dim=3)[..., None]
         else:
             rgb_entropy = logistic_normal_entropy(rgb_mean, rgb_logvar, samples=self.stochastic_samples, dim=3)[..., None]
         
         if self.compute_kl:
-            log_prob_p = logistic_normal_log_prob(pre_sigmoid_rgb_samples, self.global_rgb_mean, self.global_rgb_std * self.global_rgb_std, dim=3).mean(-2)
-            rgb_kl = -1.0 * (rgb_entropy + log_prob_p)
-            outputs["rgb_kl"] = rgb_kl.mean(-1, keepdim=True)
+            q_samples = pre_sigmoid_rgb_samples
+            p_samples = self.global_rgb_mean + torch.randn(list(outputs_shape) + [self.stochastic_samples, 3]).to(rgb_mean) * self.global_rgb_std
+            log_prob_p = logistic_normal_log_prob(p_samples, self.global_rgb_mean, self.global_rgb_std * self.global_rgb_std, dim=3)
+            log_prob_q = logistic_normal_log_prob(q_samples, rgb_mean.unsqueeze(-2), trunc_exp(rgb_logvar.unsqueeze(-2)), dim=3)
+            logr = log_prob_p - log_prob_q
+            rgb_kl = trunc_exp(logr) - 1 - logr
+            outputs["rgb_kl"] = rgb_kl.mean(-2)
             
         rgb_mean = F.sigmoid(rgb_mean)
         outputs.update({FieldHeadNames.RGB: rgb_samples.transpose(-2, -3), "rgb_std": rgb_std, "rgb_mean": rgb_mean, "rgb_entropy": rgb_entropy})

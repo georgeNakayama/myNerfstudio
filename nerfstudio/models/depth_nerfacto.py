@@ -86,6 +86,7 @@ class DepthNerfactoModel(NerfactoModel):
                 metrics_dict["depth_loss"] += depth_loss(
                     weights=outputs["weights_list"][i],
                     ray_samples=outputs["ray_samples_list"][i],
+                    ray_bundle=outputs["ray_bundle"],
                     termination_depth=termination_depth,
                     predicted_depth=outputs["depth"],
                     sigma=sigma,

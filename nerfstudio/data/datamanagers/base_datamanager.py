@@ -65,7 +65,7 @@ from nerfstudio.data.utils.dataloaders import (
     RandIndicesEvalDataloader,
 )
 from nerfstudio.data.utils.nerfstudio_collate import nerfstudio_collate
-from nerfstudio.engine.callbacks import TrainingCallback, TrainingCallbackAttributes
+from nerfstudio.engine.callbacks import TrainingCallback, TrainingCallbackAttributes, TrainingCallbackLocation
 from nerfstudio.model_components.ray_generators import RayGenerator
 from nerfstudio.utils.misc import IterableWrapper
 from nerfstudio.utils.rich_utils import CONSOLE
@@ -417,6 +417,14 @@ class VanillaDataManagerConfig(DataManagerConfig):
     """Size of patch to sample from. If >1, patch-based sampling will be used."""
     pixel_sampler: PixelSamplerConfig = PixelSamplerConfig()
     """Specifies the pixel sampler used to sample pixels from images."""
+    center_crop: bool = False 
+    """Whether to use center crop at the beginning of training"""
+    center_crop_iter: int = 500 
+    """center crop iteration"""
+    crops_frac: float = 0.5 
+    """center crop fraction"""
+    use_mask_iter: int = -1
+    """iterations to use mask"""
 
 
 TDataset = TypeVar("TDataset", bound=InputDataset, default=InputDataset)
@@ -518,6 +526,19 @@ class VanillaDataManager(DataManager, Generic[TDataset]):
                         return cast(Type[TDataset], value)
         return default
 
+    def get_training_callbacks(
+        self, training_callback_attributes: TrainingCallbackAttributes
+    ) -> List[TrainingCallback]:
+        """Returns a list of callbacks to be used during training."""
+        cbs = []
+        if self.config.center_crop:
+            cb = TrainingCallback([TrainingCallbackLocation.BEFORE_TRAIN_ITERATION], self.train_pixel_sampler.set_center_crop, update_every_num_iters=1)
+            cbs.append(cb)
+        if self.config.use_mask_iter > 0:
+            cb = TrainingCallback([TrainingCallbackLocation.BEFORE_TRAIN_ITERATION], self.train_pixel_sampler.toggle_use_mask, update_every_num_iters=1, args=[self.config.use_mask_iter])
+            cbs.append(cb)
+        return cbs
+
     def create_train_dataset(self) -> TDataset:
         """Sets up the data loaders for training"""
         return self.dataset_type(
@@ -567,7 +588,7 @@ class VanillaDataManager(DataManager, Generic[TDataset]):
             exclude_batch_keys_from_device=self.exclude_batch_keys_from_device,
         )
         self.iter_train_image_dataloader = iter(self.train_image_dataloader)
-        self.train_pixel_sampler = self._get_pixel_sampler(self.train_dataset, self.config.train_num_rays_per_batch)
+        self.train_pixel_sampler = self._get_pixel_sampler(self.train_dataset, self.config.train_num_rays_per_batch, center_crop=self.config.center_crop, center_crop_iter=self.config.center_crop_iter, crops_frac=self.config.crops_frac)
         self.train_camera_optimizer = self.config.camera_optimizer.setup(
             num_cameras=self.train_dataset.cameras.size, device=self.device
         )

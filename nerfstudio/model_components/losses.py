@@ -22,10 +22,11 @@ import torch
 from jaxtyping import Bool, Float
 from torch import Tensor, nn
 
-from nerfstudio.cameras.rays import RaySamples
+from nerfstudio.cameras.rays import RaySamples, RayBundle
 from nerfstudio.field_components.field_heads import FieldHeadNames
 from nerfstudio.utils.math import masked_reduction, normalized_depth_scale_and_shift
 from nerfstudio.field_components.activations import trunc_exp
+from nerfstudio.model_components.ray_samplers import PDFSampler, UniformSampler
 L1Loss = nn.L1Loss
 MSELoss = nn.MSELoss
 
@@ -42,7 +43,7 @@ class DepthLossType(Enum):
     """Types of depth losses for depth supervision."""
     DS_NERF = 1
     URF = 2
-    STOCHASTIC_NERF = 3
+    SCADE = 3
     
 
 
@@ -279,6 +280,17 @@ def urban_radiance_field_depth_loss(
     loss = (expected_depth_loss + line_of_sight_loss) * depth_mask
     return torch.mean(loss)
 
+def scade_depth_loss(weights: Tensor, termination_depth: Tensor, ray_bundles: RayBundle, num_samples=128):
+    uniform_sampler = UniformSampler(num_samples, False, False)
+    sampler = PDFSampler(num_samples, train_stratified=False, include_original=False, add_end_bin=True)
+    ray_samples = uniform_sampler(ray_bundles)
+    samples = sampler.generate_ray_samples(ray_bundles, ray_samples, weights)
+    steps = 0.5 * (samples.frustums.starts + samples.frustums.ends)
+    depth_mask = termination_depth > 0
+    depth_loss = MSELoss(reduction="none")(steps, termination_depth.unsqueeze(-2).repeat_interleave(num_samples, -2))
+    depth_loss = depth_loss * depth_mask.unsqueeze(-1)
+    depth_loss = torch.sum(depth_loss) / torch.sum(depth_mask)
+    return depth_loss
 
 def depth_loss(
     weights: Float[Tensor, "*batch num_samples 1"],
@@ -286,6 +298,7 @@ def depth_loss(
     termination_depth: Float[Tensor, "*batch 1"],
     predicted_depth: Float[Tensor, "*batch 1"],
     sigma: Float[Tensor, "0"],
+    ray_bundle: RayBundle,
     directions_norm: Float[Tensor, "*batch 1"],
     is_euclidean: bool,
     depth_loss_type: DepthLossType,
@@ -315,7 +328,8 @@ def depth_loss(
 
     if depth_loss_type == DepthLossType.URF:
         return urban_radiance_field_depth_loss(weights, termination_depth, predicted_depth, steps, sigma)
-
+    if depth_loss_type == DepthLossType.SCADE:
+        return scade_depth_loss(weights, termination_depth, ray_bundle)
     raise NotImplementedError("Provided depth loss type not implemented.")
 
 

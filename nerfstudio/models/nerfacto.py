@@ -133,6 +133,8 @@ class NerfactoModelConfig(ModelConfig):
     """Specifies whether to add an ending bin to each ray's samples."""
     use_aabb_collider: bool = False
     """Specifies whether to use aabb collider instead of near and far collider"""
+    use_directional_encoding: bool = True
+    """Whether to use directional encoding"""
 
 
 class NerfactoModel(Model):
@@ -168,6 +170,7 @@ class NerfactoModel(Model):
             use_pred_normals=self.config.predict_normals,
             appearance_embedding_dim=self.config.appearance_embedding_dim,
             use_average_appearance_embedding=self.config.use_average_appearance_embedding,
+            use_directional_encoding=self.config.use_directional_encoding,
             implementation=self.config.implementation,
         )
 
@@ -319,6 +322,7 @@ class NerfactoModel(Model):
         if self.training:
             outputs["weights_list"] = weights_list
             outputs["ray_samples_list"] = ray_samples_list
+            outputs["ray_bundle"] = ray_bundle
 
         if self.training and self.config.predict_normals:
             outputs["rendered_orientation_loss"] = orientation_loss(

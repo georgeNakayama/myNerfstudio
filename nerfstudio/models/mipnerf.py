@@ -23,7 +23,7 @@ import torch
 from torch.nn import Parameter
 from torchmetrics.functional import structural_similarity_index_measure
 from torchmetrics.image import PeakSignalNoiseRatio
-# from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
+from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
 
 from nerfstudio.cameras.rays import RayBundle
 from nerfstudio.field_components.encodings import NeRFEncoding
@@ -69,7 +69,7 @@ class MipNerfModel(Model):
             in_dim=3, num_frequencies=16, min_freq_exp=0.0, max_freq_exp=16.0, include_input=True
         )
         self.direction_encoding = NeRFEncoding(
-            in_dim=3, num_frequencies=4, min_freq_exp=0.0, max_freq_exp=4.0, include_input=True
+            in_dim=3, num_frequencies=self.config.dir_encode_freq, min_freq_exp=0.0, max_freq_exp=4.0, include_input=True
         )
 
         self.field = NeRFField(
@@ -81,7 +81,7 @@ class MipNerfModel(Model):
         self.sampler_pdf = PDFSampler(num_samples=self.config.num_importance_samples, include_original=False)
 
         # renderers
-        self.renderer_rgb = RGBRenderer(background_color=colors.WHITE)
+        self.renderer_rgb = RGBRenderer(background_color=self.config.background_color)
         self.renderer_accumulation = AccumulationRenderer()
         self.renderer_depth = DepthRenderer()
 
@@ -91,7 +91,7 @@ class MipNerfModel(Model):
         # metrics
         self.psnr = PeakSignalNoiseRatio(data_range=1.0)
         self.ssim = structural_similarity_index_measure
-        # self.lpips = LearnedPerceptualImagePatchSimilarity(normalize=True)
+        self.lpips = LearnedPerceptualImagePatchSimilarity(normalize=True)
 
     def get_param_groups(self) -> Dict[str, List[Parameter]]:
         param_groups = {}
@@ -139,6 +139,17 @@ class MipNerfModel(Model):
             "depth_fine": depth_fine,
         }
         return outputs
+
+    def get_metrics_dict(self, outputs, batch):
+        metrics_dict = {}
+        gt_rgb = batch["image"].to(self.device)  # RGB or RGBA image
+        gt_rgb = self.renderer_rgb.blend_background(gt_rgb)  # Blend if RGBA
+        predicted_rgb_fine = outputs["rgb_fine"]
+        predicted_rgb_coarse = outputs["rgb_coarse"]
+        metrics_dict["psnr_fine"] = self.psnr(predicted_rgb_fine, gt_rgb)
+        metrics_dict["psnr_coarse"] = self.psnr(predicted_rgb_coarse, gt_rgb)
+
+        return metrics_dict
 
     def get_loss_dict(self, outputs, batch, metrics_dict=None):
         image = batch["image"].to(self.device)
@@ -197,7 +208,7 @@ class MipNerfModel(Model):
         coarse_psnr = self.psnr(image, rgb_coarse)
         fine_psnr = self.psnr(image, rgb_fine)
         fine_ssim = self.ssim(image, rgb_fine)
-        # fine_lpips = self.lpips(image, rgb_fine)
+        fine_lpips = self.lpips(image, rgb_fine)
 
         assert isinstance(fine_ssim, torch.Tensor)
         metrics_dict = {
@@ -205,7 +216,7 @@ class MipNerfModel(Model):
             "coarse_psnr": float(coarse_psnr.item()),
             "fine_psnr": float(fine_psnr.item()),
             "fine_ssim": float(fine_ssim.item()),
-            # "fine_lpips": float(fine_lpips.item()),
+            "fine_lpips": float(fine_lpips.item()),
         }
         images_dict = {"img": combined_rgb, "accumulation": combined_acc, "depth": combined_depth}
         return metrics_dict, images_dict

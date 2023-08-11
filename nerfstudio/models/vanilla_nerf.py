@@ -19,7 +19,7 @@ Implementation of vanilla nerf.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Tuple, Type
+from typing import Any, Dict, List, Tuple, Type, Literal
 
 import torch
 from torch.nn import Parameter
@@ -58,12 +58,15 @@ class VanillaModelConfig(ModelConfig):
     """Number of samples in coarse field evaluation"""
     num_importance_samples: int = 128
     """Number of samples in fine field evaluation"""
-
+    add_end_bin: bool = False
     enable_temporal_distortion: bool = False
     """Specifies whether or not to include ray warping based on time."""
     temporal_distortion_params: Dict[str, Any] = to_immutable_dict({"kind": TemporalDistortionKind.DNERF})
     """Parameters to instantiate temporal distortion with"""
-
+    dir_encode_freq: int = 4
+    """frequency of directional encoding"""
+    background_color: Literal["random", "last_sample", "black", "white"] = "white"
+    """Whether to randomize the background color."""
 
 class NeRFModel(Model):
     """Vanilla NeRF model
@@ -97,7 +100,7 @@ class NeRFModel(Model):
             in_dim=3, num_frequencies=10, min_freq_exp=0.0, max_freq_exp=8.0, include_input=True
         )
         direction_encoding = NeRFEncoding(
-            in_dim=3, num_frequencies=4, min_freq_exp=0.0, max_freq_exp=4.0, include_input=True
+            in_dim=3, num_frequencies=self.config.dir_encode_freq, min_freq_exp=0.0, max_freq_exp=4.0, include_input=True
         )
 
         self.field_coarse = NeRFField(
@@ -112,10 +115,10 @@ class NeRFModel(Model):
 
         # samplers
         self.sampler_uniform = UniformSampler(num_samples=self.config.num_coarse_samples)
-        self.sampler_pdf = PDFSampler(num_samples=self.config.num_importance_samples)
+        self.sampler_pdf = PDFSampler(num_samples=self.config.num_importance_samples, add_end_bin=self.config.add_end_bin)
 
         # renderers
-        self.renderer_rgb = RGBRenderer(background_color=colors.WHITE)
+        self.renderer_rgb = RGBRenderer(background_color=self.config.background_color)
         self.renderer_accumulation = AccumulationRenderer()
         self.renderer_depth = DepthRenderer()
 
@@ -195,6 +198,17 @@ class NeRFModel(Model):
             "depth_fine": depth_fine,
         }
         return outputs
+    
+    def get_metrics_dict(self, outputs, batch):
+        metrics_dict = {}
+        gt_rgb = batch["image"].to(self.device)  # RGB or RGBA image
+        gt_rgb = self.renderer_rgb.blend_background(gt_rgb)  # Blend if RGBA
+        predicted_rgb_fine = outputs["rgb_fine"]
+        predicted_rgb_coarse = outputs["rgb_coarse"]
+        metrics_dict["psnr_fine"] = self.psnr(predicted_rgb_fine, gt_rgb)
+        metrics_dict["psnr_coarse"] = self.psnr(predicted_rgb_coarse, gt_rgb)
+
+        return metrics_dict
 
     def get_loss_dict(self, outputs, batch, metrics_dict=None) -> Dict[str, torch.Tensor]:
         # Scaling metrics by coefficients to create the losses.

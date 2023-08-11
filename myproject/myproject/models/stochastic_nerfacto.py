@@ -56,6 +56,7 @@ from nerfstudio.utils import colormaps
 from nerfstudio.utils.colormaps import ColormapOptions
 from myproject.model_components.losses import neg_nll_loss, gaussian_entropy, log_normal_entropy, logistic_normal_entropy
 from myproject.fields.stochastic_nerfacto_field import StochasticNerfactoField
+from icecream import ic
 
 @dataclass
 class StochasticNerfactoModelConfig(DepthNerfactoModelConfig):
@@ -73,34 +74,34 @@ class StochasticNerfactoModelConfig(DepthNerfactoModelConfig):
     """Sample every n steps after the warmup"""
     entropy_mult: float = 0.001
     """multiplicative factor to the entropy loss term"""
-    num_proposal_iterations: int = 0
+    num_proposal_iterations: int = 2
     """Number of proposal network iterations."""
     use_same_proposal_network: bool = False
     """Use the same proposal network. Otherwise use different ones."""
     """Arguments for the proposal density fields."""
     proposal_initial_sampler: Literal["piecewise", "uniform"] = "uniform"
     """Initial sampler for the proposal network. Piecewise is preferred for unbounded scenes."""
-    interlevel_loss_mult: float = 0
+    interlevel_loss_mult: float = 1.0
     """Proposal loss multiplier."""
-    distortion_loss_mult: float = 0
+    distortion_loss_mult: float = 0.002
     """Distortion loss multiplier."""
-    orientation_loss_mult: float = 0
+    orientation_loss_mult: float = 0.0001
     """Orientation loss multiplier on computed normals."""
-    pred_normal_loss_mult: float = 0
+    pred_normal_loss_mult: float = 0.001
     """Predicted normal loss multiplier."""
-    use_proposal_weight_anneal: bool = False
+    use_proposal_weight_anneal: bool = True
     """Whether to use proposal weight annealing."""
     use_average_appearance_embedding: bool = False
     """Whether to use average appearance embedding or zeros for inference."""
     use_single_jitter: bool = True
     """Whether use single jitter or not for the proposal networks."""
-    disable_scene_contraction: bool = False
+    disable_scene_contraction: bool = True
     """Whether to disable scene contraction or not."""
     depth_method: Literal["expected", "median"] = "expected"
     """Which depth map rendering method to use."""
     appearance_embed_dim: int = 0
     """Dimension of the appearance embedding."""
-    global_entropy: bool = False
+    global_entropy: bool = True
     """Whether to calculate entropy by sampling points in the entire bounding box"""
     add_end_bin: bool = True 
     """Specifies whether to add an ending bin to each ray's samples."""
@@ -108,8 +109,16 @@ class StochasticNerfactoModelConfig(DepthNerfactoModelConfig):
     """Specifies whether to use aabb collider instead of near and far collider"""
     use_gaussian_entropy: bool = False
     """Whether to use Gaussian entropy to compute entropy loss"""
-    compute_kl: bool = False
+    compute_kl: bool = True
     """Whether to compute the KL divergence"""
+    deterministic_color: bool = False
+    """Whether to set color to deterministic regression"""
+    init_glob_density: float = -10 
+    """Set the initial global density"""
+    global_density_std: float = 3
+    """Set the global density std"""
+    global_rgb_std: float = 2
+    """Set the global rgb std"""
 
 
 class StochasticNerfactoModel(DepthNerfactoModel):
@@ -146,7 +155,11 @@ class StochasticNerfactoModel(DepthNerfactoModel):
             appearance_embedding_dim=self.config.appearance_embed_dim,
             implementation=self.config.implementation,
             use_gaussian_ent=self.config.use_gaussian_entropy,
-            compute_kl=self.config.compute_kl
+            compute_kl=self.config.compute_kl,
+            deterministic_color=self.config.deterministic_color,
+            init_glob_density=self.config.init_glob_density,
+            global_density_std=self.config.global_density_std,
+            global_rgb_std=self.config.global_rgb_std
         )
 
 
@@ -178,8 +191,8 @@ class StochasticNerfactoModel(DepthNerfactoModel):
         if self.config.use_gradient_scaling:
             field_outputs = scale_gradients_by_distance_squared(field_outputs, ray_samples)
         bundle_shape = ray_bundle.shape
-        ray_bundle = ray_bundle.reshape(list(bundle_shape) + [1]).broadcast_to(list(bundle_shape) + [self.config.K_samples])
-        new_ray_samples = ray_bundle.get_ray_samples(
+        new_ray_bundle = ray_bundle.reshape(list(bundle_shape) + [1]).broadcast_to(list(bundle_shape) + [self.config.K_samples])
+        new_ray_samples = new_ray_bundle.get_ray_samples(
             bin_starts=ray_samples.frustums.starts.unsqueeze(-3).repeat_interleave(self.config.K_samples, dim=-3),
             bin_ends=ray_samples.frustums.ends.unsqueeze(-3).repeat_interleave(self.config.K_samples, dim=-3),
             spacing_starts=ray_samples.spacing_starts.unsqueeze(-3).repeat_interleave(self.config.K_samples, dim=-3),
@@ -201,24 +214,27 @@ class StochasticNerfactoModel(DepthNerfactoModel):
             "rgb": rgb,
             "accumulation": accumulation,
             "depth": depth,
-            "rgb_field_std": field_outputs["rgb_std"],
-            "rgb_field_mean": field_outputs["rgb_mean"],
             "density_field_std": field_outputs["density_std"],
             "density_field_mean": field_outputs["density_mean"],
+            "density_field_entropy": field_outputs["density_entropy"],
             "field_mean_weights": mean_weights,
             "field_sample_positions":SceneBox.get_normalized_positions(ray_samples.frustums.get_positions(), aabb=self.scene_box.aabb.to(weights.device))
         }
+        if not self.config.deterministic_color:
+            outputs["rgb_field_std"] = field_outputs["rgb_std"]
+            outputs["rgb_field_mean"] = field_outputs["rgb_mean"]
+            outputs["rgb_field_entropy"] = field_outputs["rgb_entropy"]
+            if self.config.compute_kl:
+                outputs["rgb_field_kl"] = field_outputs["rgb_kl"]
         
         if self.training:
+            outputs["ray_bundle"] = ray_bundle 
             outputs["weights_list"] = weights_list
             outputs["ray_samples_list"] = ray_samples_list
             
             
         
-        outputs["rgb_field_entropy"] = field_outputs["rgb_entropy"]
-        outputs["density_field_entropy"] = field_outputs["density_entropy"]
         if self.config.compute_kl:
-            outputs["rgb_field_kl"] = field_outputs["rgb_kl"]
             outputs["density_field_kl"] = field_outputs["density_kl"]
         
         if self.config.predict_normals:
@@ -229,7 +245,7 @@ class StochasticNerfactoModel(DepthNerfactoModel):
 
         if self.training and self.config.predict_normals:
             outputs["rendered_orientation_loss"] = orientation_loss(
-                weights.detach(), field_outputs[FieldHeadNames.NORMALS], ray_bundle.directions
+                weights.detach(), field_outputs[FieldHeadNames.NORMALS], new_ray_bundle.directions
             )
 
             outputs["rendered_pred_normal_loss"] = pred_normal_loss(
@@ -274,39 +290,29 @@ class StochasticNerfactoModel(DepthNerfactoModel):
             outputs[output_name] = outputs[output_name].reshape(image_height, image_width, *sh[1:])
                 
         rgb = outputs["rgb"]
-        rgb_field_std = outputs["rgb_field_std"]
-        rgb_field_mean = outputs["rgb_field_mean"]
-        rgb_field_entropy = outputs["rgb_field_entropy"]
+
         ray_field_pos = outputs["field_sample_positions"]
         density_field_std = outputs["density_field_std"]
         density_field_entropy = outputs["density_field_entropy"] # [h, w, N, dim]
         density_field_mean = outputs["density_field_mean"]
         field_mean_weight = outputs["field_mean_weights"]
-        rgb_variance = rgb.var(dim=(-1, -2))[..., None]
         rgb_mean = rgb.mean(dim=-2)
         depth_variance = outputs["depth"].var(dim=-2)
         depth_mean = outputs["depth"].mean(dim=-2)
         acc_variance = outputs["accumulation"].var(dim=-2)
         acc_mean = outputs["accumulation"].mean(dim=-2)
-        rendered_rgb_entropy = self.entropy_renderer(rgb_field_entropy, weights=field_mean_weight)
         
             
         rendered_density_entropy = self.entropy_renderer(density_field_entropy, weights=field_mean_weight)
-        rendered_rgb_std = self.entropy_renderer(rgb_field_std, weights=field_mean_weight)
+        
         rendered_density_std = self.entropy_renderer(density_field_std, weights=field_mean_weight)
         new_outputs = {
             "rgb":rgb_mean,
-            "rgb_field_std":rgb_field_std,
-            "rgb_field_entropy":rgb_field_entropy,
-            "rendered_rgb_std":rendered_rgb_std,
-            "rendered_rgb_entropy":rendered_rgb_entropy,
-            "rgb_field_mean":rgb_field_mean,
             "density_field_std":density_field_std,
             "density_field_entropy":density_field_entropy,
             "rendered_density_std":rendered_density_std,
             "rendered_density_entropy":rendered_density_entropy,
             "density_field_mean":density_field_mean,
-            "rgb_var":rgb_variance,
             "depth":depth_mean,
             "depth_var":depth_variance,
             "acc":acc_mean,
@@ -316,12 +322,29 @@ class StochasticNerfactoModel(DepthNerfactoModel):
             "origins": camera_ray_bundle.origins,
             "directions": camera_ray_bundle.directions,
         }
+        
+        if not self.config.deterministic_color:
+            rgb_field_std = outputs["rgb_field_std"]
+            rgb_field_mean = outputs["rgb_field_mean"]
+            rgb_field_entropy = outputs["rgb_field_entropy"]
+            new_outputs.update({
+                "rgb_field_entropy":rgb_field_entropy,
+                "rgb_field_std":outputs["rgb_field_std"],
+                "rendered_rgb_std":self.entropy_renderer(rgb_field_std, weights=field_mean_weight),
+                "rendered_rgb_entropy":self.entropy_renderer(rgb_field_entropy, weights=field_mean_weight),
+                "rgb_field_mean":rgb_field_mean,
+                "rgb_var":rgb.var(dim=(-1, -2))[..., None],
+            })
+            if self.config.compute_kl:
+                new_outputs["rgb_kl"] = outputs["rgb_field_kl"]
+                new_outputs["rendered_rgb_kl"] = self.entropy_renderer(outputs["rgb_field_kl"], weights=field_mean_weight)
+        
+        if camera_ray_bundle.metadata is not None and "directions_norm" in camera_ray_bundle.metadata:
+            new_outputs["directions_norm"] = camera_ray_bundle.metadata["directions_norm"]
+        
         if self.config.compute_kl:
-            new_outputs["rgb_kl"] = outputs["rgb_field_kl"]
             new_outputs["density_kl"] = outputs["density_field_kl"]
-            rendered_rgb_kl = self.entropy_renderer(outputs["rgb_field_kl"], weights=field_mean_weight)
             rendered_density_kl = self.entropy_renderer(outputs["density_field_kl"], weights=field_mean_weight)
-            new_outputs["rendered_rgb_kl"] = rendered_rgb_kl
             new_outputs["rendered_density_kl"] = rendered_density_kl
         for i in range(self.config.num_proposal_iterations):
             new_outputs[f"prop_depth_{i}"] = outputs[f"prop_depth_{i}"]
@@ -333,7 +356,8 @@ class StochasticNerfactoModel(DepthNerfactoModel):
         rgb_mean = outputs["rgb"].mean(-2)
         metrics_dict["psnr"] = self.psnr(rgb_mean, image)
         metrics_dict["rgb_loss"] = self.rgb_loss(image, rgb_mean)
-        metrics_dict["rgb_std"] = outputs["rgb_field_std"].mean()
+        if not self.config.deterministic_color:
+            metrics_dict["rgb_std"] = outputs["rgb_field_std"].mean()
         metrics_dict["density_std"] = outputs["density_field_std"].mean()
         metrics_dict["global_rgb_mean"] = self.field.global_rgb_mean.mean()
         metrics_dict["global_density_mean"] = self.field.global_density_mean.mean()
@@ -346,10 +370,11 @@ class StochasticNerfactoModel(DepthNerfactoModel):
             metrics_dict["depth_loss"] += depth_loss(
                 weights=outputs["weights_list"][-1],
                 ray_samples=outputs["ray_samples_list"][-1],
+                ray_bundle=outputs["ray_bundle"],
                 termination_depth=termination_depth,
                 predicted_depth=outputs["depth"],
                 sigma=sigma,
-                directions_norm=outputs["directions_norm"],
+                directions_norm=outputs["directions_norm"].unsqueeze(-2),
                 is_euclidean=self.config.is_euclidean_depth,
                 depth_loss_type=self.config.depth_loss_type,
             )
@@ -363,10 +388,14 @@ class StochasticNerfactoModel(DepthNerfactoModel):
         if self.training:
             loss_dict["neg_nll_loss"] = neg_nll_loss(outputs["rgb"], image, self.config.K_samples)
             if self.config.compute_kl:
-                loss_dict["rgb_kl_loss"] = self.config.entropy_mult * outputs["rgb_field_kl"].mean()
+        
+                if not self.config.deterministic_color:
+                    loss_dict["rgb_kl_loss"] = self.config.entropy_mult * outputs["rgb_field_kl"].mean()
+                    
                 loss_dict["density_kl_loss"] = self.config.entropy_mult * outputs["density_field_kl"].mean()
             else:
-                loss_dict["neg_rgb_entropy_loss"] = -1 * self.config.entropy_mult * outputs["rgb_field_entropy"].mean()
+                if not self.config.deterministic_color:
+                    loss_dict["neg_rgb_entropy_loss"] = -1 * self.config.entropy_mult * outputs["rgb_field_entropy"].mean()
                 loss_dict["neg_density_entropy_loss"] = -1 * self.config.entropy_mult * outputs["density_field_entropy"].mean()
             
             # interlevel loss
@@ -428,14 +457,16 @@ class StochasticNerfactoModel(DepthNerfactoModel):
         metrics_dict["max_depth"] = float(torch.max(outputs["depth"]))
         metrics_dict["min_depth"] = float(torch.min(outputs["depth"]))
         metrics_dict["density_entropy"] = float(torch.mean(outputs["density_field_entropy"]))
-        metrics_dict["rgb_entropy"] = float(torch.mean(outputs["rgb_field_entropy"]))
         depth_mask = ground_truth_depth > 0
         metrics_dict["depth_mse"] = float(
             torch.nn.functional.mse_loss(outputs["depth"][depth_mask], ground_truth_depth[depth_mask]).cpu()
         )
         
-        avged_rgb_field_std = outputs["rgb_field_std"].mean(dim=(-1, -2))[..., None]
-        avged_rgb_field_ent = outputs["rgb_field_entropy"].mean(-2)
+        if not self.config.deterministic_color:
+            avged_rgb_field_std = outputs["rgb_field_std"].mean(dim=(-1, -2))[..., None]
+            avged_rgb_field_ent = outputs["rgb_field_entropy"].mean(-2)
+            metrics_dict["rgb_entropy"] = float(torch.mean(outputs["rgb_field_entropy"]))
+        
         avged_density_field_std = outputs["density_field_std"].mean(-2)
         avged_density_field_ent = outputs["density_field_entropy"].mean(-2)
         
@@ -460,13 +491,8 @@ class StochasticNerfactoModel(DepthNerfactoModel):
             pos = F.grid_sample(
                 pos.reshape(1, -1, 3).transpose(1,2).reshape(1, 3, h, w, self.config.num_nerf_samples_per_ray),
                 indices, mode="nearest", align_corners=True).reshape(3, -1).transpose(0,1)
-            colored_rgb_field_mean = F.grid_sample(
-                outputs["rgb_field_mean"].reshape(1, -1, 3).transpose(1,2).reshape(1, 3, h, w, self.config.num_nerf_samples_per_ray), 
-                indices, mode="nearest", align_corners=True).reshape(3, -1).transpose(0,1)
-            colored_rgb_field_std = F.grid_sample(outputs["rgb_field_std"].to(indices).mean(-1).unsqueeze(0).unsqueeze(0), indices,
-                                                   mode="nearest", align_corners=True).reshape(-1, 1)
-            colored_rgb_field_ent = F.grid_sample(outputs["rgb_field_entropy"].to(indices)[..., 0].unsqueeze(0).unsqueeze(0), indices,
-                                                   mode="nearest", align_corners=True).reshape(-1, 1)
+            
+            
             colored_density_field_mean = F.grid_sample(outputs["density_field_mean"].to(indices)[..., 0].unsqueeze(0).unsqueeze(0), indices,
                                                         mode="nearest", align_corners=True).reshape(-1, 1)
             colored_weight_field_mean = F.grid_sample(outputs["field_mean_weights"].to(indices)[..., 0].unsqueeze(0).unsqueeze(0), indices,
@@ -475,42 +501,52 @@ class StochasticNerfactoModel(DepthNerfactoModel):
                                                        mode="nearest", align_corners=True).reshape(-1, 1)
             colored_density_field_ent = F.grid_sample(outputs["density_field_entropy"].to(indices)[..., 0].unsqueeze(0).unsqueeze(0), indices,
                                                        mode="nearest", align_corners=True).reshape(-1, 1)
+            
+            if not self.config.deterministic_color:
+                colored_rgb_field_mean = F.grid_sample(
+                    outputs["rgb_field_mean"].reshape(1, -1, 3).transpose(1,2).reshape(1, 3, h, w, self.config.num_nerf_samples_per_ray), 
+                    indices, mode="nearest", align_corners=True).reshape(3, -1).transpose(0,1)
+                colored_rgb_field_std = F.grid_sample(outputs["rgb_field_std"].to(indices).mean(-1).unsqueeze(0).unsqueeze(0), indices,
+                                                    mode="nearest", align_corners=True).reshape(-1, 1)
+                colored_rgb_field_ent = F.grid_sample(outputs["rgb_field_entropy"].to(indices)[..., 0].unsqueeze(0).unsqueeze(0), indices,
+                                                    mode="nearest", align_corners=True).reshape(-1, 1)
             if self.config.compute_kl:
-                colored_rgb_field_kl = F.grid_sample(outputs["rgb_kl"].to(indices)[..., 0].unsqueeze(0).unsqueeze(0), indices,
-                                                   mode="nearest", align_corners=True).reshape(-1, 1)
+                
+                if not self.config.deterministic_color:
+                    colored_rgb_field_kl = F.grid_sample(outputs["rgb_kl"].to(indices)[..., 0].unsqueeze(0).unsqueeze(0), indices,
+                                                    mode="nearest", align_corners=True).reshape(-1, 1)
+                    
                 colored_density_field_kl = F.grid_sample(outputs["density_kl"].to(indices)[..., 0].unsqueeze(0).unsqueeze(0), indices,
                                                    mode="nearest", align_corners=True).reshape(-1, 1)
         
-        colored_rgb_field_std = colormaps.apply_colormap(colored_rgb_field_std, colormap_options=ColormapOptions(colormap="default", normalize=True))
-        colored_rgb_field_ent = colormaps.apply_colormap(colored_rgb_field_ent, colormap_options=ColormapOptions(colormap="default", normalize=True))
+        if not self.config.deterministic_color:
+            colored_rgb_field_std = colormaps.apply_colormap(colored_rgb_field_std, colormap_options=ColormapOptions(colormap="default", normalize=True))
+            colored_rgb_field_ent = colormaps.apply_colormap(colored_rgb_field_ent, colormap_options=ColormapOptions(colormap="default", normalize=True))
+            rgb_field_3d_frustum_mean = torch.cat([pos, colored_rgb_field_mean], dim=-1).reshape(-1, 3+3)
+            rgb_field_3d_frustum_std = torch.cat([pos, colored_rgb_field_std], dim=-1).reshape(-1, 3+3)
+            rgb_field_3d_frustum_ent = torch.cat([pos, colored_rgb_field_ent], dim=-1).reshape(-1, 3+3)
+            
         colored_weight_field_mean = colormaps.apply_colormap(colored_weight_field_mean, colormap_options=ColormapOptions(colormap="default"))
         colored_density_field_mean = colormaps.apply_colormap(colored_density_field_mean, colormap_options=ColormapOptions(colormap="default", normalize=True))
         colored_density_field_std = colormaps.apply_colormap(colored_density_field_std, colormap_options=ColormapOptions(colormap="default", normalize=True))
         colored_density_field_ent = colormaps.apply_colormap(colored_density_field_ent, colormap_options=ColormapOptions(colormap="default", normalize=True))
+        
         if self.config.compute_kl:
+            
+            if not self.config.deterministic_color:
                 colored_rgb_field_kl = colormaps.apply_colormap(colored_rgb_field_kl, colormap_options=ColormapOptions(colormap="default", normalize=True))
-                colored_density_field_kl = colormaps.apply_colormap(colored_density_field_kl, colormap_options=ColormapOptions(colormap="default", normalize=True))
-        rgb_field_3d_frustum_mean = torch.cat([pos, colored_rgb_field_mean], dim=-1).reshape(-1, 3+3)
-        rgb_field_3d_frustum_std = torch.cat([pos, colored_rgb_field_std], dim=-1).reshape(-1, 3+3)
-        rgb_field_3d_frustum_ent = torch.cat([pos, colored_rgb_field_ent], dim=-1).reshape(-1, 3+3)
+                rgb_field_3d_frustum_kl = torch.cat([pos, colored_rgb_field_kl], dim=-1).reshape(-1, 3+3)
+            
+            colored_density_field_kl = colormaps.apply_colormap(colored_density_field_kl, colormap_options=ColormapOptions(colormap="default", normalize=True))
+            density_field_3d_frustum_kl = torch.cat([pos, colored_density_field_kl], dim=-1).reshape(-1, 3+3)
+        
         weight_field_3d_frustum_mean = torch.cat([pos, colored_weight_field_mean], dim=-1).reshape(-1, 3+3)
         density_field_3d_frustum_mean = torch.cat([pos, colored_density_field_mean], dim=-1).reshape(-1, 3+3)
         density_field_3d_frustum_std = torch.cat([pos, colored_density_field_std], dim=-1).reshape(-1, 3+3)
         density_field_3d_frustum_ent = torch.cat([pos, colored_density_field_ent], dim=-1).reshape(-1, 3+3)
-        if self.config.compute_kl:
-            density_field_3d_frustum_kl = torch.cat([pos, colored_density_field_kl], dim=-1).reshape(-1, 3+3)
-            rgb_field_3d_frustum_kl = torch.cat([pos, colored_rgb_field_kl], dim=-1).reshape(-1, 3+3)
         
         images_dict = {
             "sample_img.mean": combined_rgb_mean, 
-            "sample_img.var": colormaps.apply_colormap(outputs["rgb_var"], colormap_options=ColormapOptions(normalize=True)), 
-            "rendered_rgb_std": colormaps.apply_colormap(outputs["rendered_rgb_std"], colormap_options=ColormapOptions(normalize=True)),
-            "rendered_rgb_ent": colormaps.apply_colormap(outputs["rendered_rgb_entropy"], colormap_options=ColormapOptions(normalize=True)),
-            "color_field_avg_std": colormaps.apply_colormap(avged_rgb_field_std, colormap_options=ColormapOptions(normalize=True)),
-            "color_field_avg_ent": colormaps.apply_colormap(avged_rgb_field_ent, colormap_options=ColormapOptions(normalize=True)),
-            "rgb_field_3d_mean": rgb_field_3d_frustum_mean,
-            "color_field_3d_std": rgb_field_3d_frustum_std,
-            "color_field_3d_ent": rgb_field_3d_frustum_ent,
             "sample_depth_mean": combined_depth_mean,
             "sample_depth_var": colormaps.apply_colormap(outputs["depth_var"], colormap_options=ColormapOptions(normalize=True)),
             "rendered_density_std": colormaps.apply_colormap(outputs["rendered_density_std"], colormap_options=ColormapOptions(normalize=True)),
@@ -525,13 +561,25 @@ class StochasticNerfactoModel(DepthNerfactoModel):
             "projected_depth": projected_depth_im,
             "projected_GT_depth": projected_gt_depth_im,
             }
-        
+        if not self.config.deterministic_color:
+            images_dict.update({
+                "sample_img.var": colormaps.apply_colormap(outputs["rgb_var"], colormap_options=ColormapOptions(normalize=True)), 
+                "rendered_rgb_std": colormaps.apply_colormap(outputs["rendered_rgb_std"], colormap_options=ColormapOptions(normalize=True)),
+                "rendered_rgb_ent": colormaps.apply_colormap(outputs["rendered_rgb_entropy"], colormap_options=ColormapOptions(normalize=True)),
+                "color_field_avg_std": colormaps.apply_colormap(avged_rgb_field_std, colormap_options=ColormapOptions(normalize=True)),
+                "color_field_avg_ent": colormaps.apply_colormap(avged_rgb_field_ent, colormap_options=ColormapOptions(normalize=True)),
+                "rgb_field_3d_mean": rgb_field_3d_frustum_mean,
+                "color_field_3d_std": rgb_field_3d_frustum_std,
+                "color_field_3d_ent": rgb_field_3d_frustum_ent,
+            })
+            if self.config.compute_kl:
+                images_dict["rgb_3d_kl"] = rgb_field_3d_frustum_kl
+                images_dict["rgb_avg_kl"] = colormaps.apply_colormap(outputs["rgb_kl"].mean(-2), colormap_options=ColormapOptions(normalize=True))
+                images_dict["rgb_rendered_kl"] = colormaps.apply_colormap(outputs["rendered_rgb_kl"], colormap_options=ColormapOptions(normalize=True))
+                
         if self.config.compute_kl:
-            images_dict["rgb_3d_kl"] = rgb_field_3d_frustum_kl
             images_dict["density_3d_kl"] = density_field_3d_frustum_kl
-            images_dict["rgb_rendered_kl"] = colormaps.apply_colormap(outputs["rendered_rgb_kl"], colormap_options=ColormapOptions(normalize=True))
             images_dict["density_rendered_kl"] = colormaps.apply_colormap(outputs["rendered_density_kl"], colormap_options=ColormapOptions(normalize=True))
-            images_dict["rgb_avg_kl"] = colormaps.apply_colormap(outputs["rgb_kl"].mean(-2), colormap_options=ColormapOptions(normalize=True))
             images_dict["density_avg_kl"] = colormaps.apply_colormap(outputs["density_kl"].mean(-2), colormap_options=ColormapOptions(normalize=True))
         
         # images_dict["img.samples"] = rgb[:, :, :self.config.eval_log_image_num].permute(0, 2, 1, 3).reshape(h, -1, 3)

@@ -108,8 +108,6 @@ class LinearMipNerfModel(MipNerfModel):
             toggle_constant_cb = TrainingCallback(where_to_run=[TrainingCallbackLocation.BEFORE_TRAIN_ITERATION], update_every_num_iters=1, func=toggle_constant)
             cbs.append(toggle_constant_cb)
         
-        return cbs
-            
         
         return cbs
     def get_param_groups(self) -> Dict[str, List[Parameter]]:

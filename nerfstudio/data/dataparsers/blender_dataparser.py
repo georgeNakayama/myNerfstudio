@@ -218,6 +218,8 @@ class BlenderDataParserConfig(DataParserConfig):
     """How much to scale the camera origins by."""
     alpha_color: str = "white"
     """alpha color of background"""
+    use_object_mask: bool = False
+    """Whether to use object mask """
 
 
 @dataclass
@@ -231,8 +233,10 @@ class Blender(DataParser):
     def __init__(self, config: BlenderDataParserConfig):
         super().__init__(config=config)
         self.data: Path = config.data
+        
         self.scale_factor: float = config.scale_factor
         self.alpha_color = config.alpha_color
+        self.use_object_mask = config.use_object_mask
 
     def _generate_dataparser_outputs(self, split="train"):
         if self.alpha_color is not None:
@@ -242,10 +246,13 @@ class Blender(DataParser):
 
         meta = load_from_json(self.data / f"transforms_{split}.json")
         image_filenames = []
+        mask_filenames = []
         poses = []
         for frame in meta["frames"]:
             fname = self.data / Path(frame["file_path"].replace("./", "") + ".png")
+            mask_fname = self.data / Path(frame["mask_file_path"].replace("./", "") + ".png")
             image_filenames.append(fname)
+            mask_filenames.append(mask_fname)
             poses.append(np.array(frame["transform_matrix"]))
         poses = np.array(poses).astype(np.float32)
 
@@ -273,6 +280,7 @@ class Blender(DataParser):
 
         dataparser_outputs = DataparserOutputs(
             image_filenames=image_filenames,
+            mask_filenames=mask_filenames if self.use_object_mask else None,
             cameras=cameras,
             alpha_color=alpha_color_tensor,
             scene_box=scene_box,

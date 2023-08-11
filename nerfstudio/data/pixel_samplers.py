@@ -57,6 +57,7 @@ class PixelSampler:
         config: the DataManagerConfig used to instantiate class
     """
 
+<<<<<<< HEAD
     config: PixelSamplerConfig
 
     def __init__(self, config: PixelSamplerConfig, **kwargs) -> None:
@@ -68,6 +69,16 @@ class PixelSampler:
         self.config.is_equirectangular = self.kwargs.get("is_equirectangular", self.config.is_equirectangular)
         self.set_num_rays_per_batch(self.config.num_rays_per_batch)
 
+=======
+    def __init__(self, num_rays_per_batch: int, keep_full_image: bool = False, center_crop: bool = False, center_crop_iter: int = 500, crops_frac: float = 0.5, **kwargs) -> None:
+        self.kwargs = kwargs
+        self.num_rays_per_batch = num_rays_per_batch
+        self.keep_full_image = keep_full_image
+        self.center_crop = center_crop
+        self.center_crop_iter = center_crop_iter
+        self.crops_frac = crops_frac
+        self.use_mask = True
+>>>>>>> updatew
     def set_num_rays_per_batch(self, num_rays_per_batch: int):
         """Set the number of rays to sample per batch.
 
@@ -75,6 +86,12 @@ class PixelSampler:
             num_rays_per_batch: number of rays to sample per batch
         """
         self.num_rays_per_batch = num_rays_per_batch
+        
+    def set_center_crop(self, step):
+        self.center_crop = self.center_crop and (step < self.center_crop_iter)
+        
+    def toggle_use_mask(self, use_mask_step, step):
+        self.use_mask = self.use_mask and step < use_mask_step
 
     def sample_method(
         self,
@@ -93,6 +110,18 @@ class PixelSampler:
             num_images: number of images to sample over
             mask: mask of possible pixels in an image to sample from.
         """
+        if not self.use_mask:
+            mask = None
+        if self.center_crop:
+            dH = int(image_height//2 * self.crops_frac)
+            dW = int(image_width//2 * self.crops_frac)
+            crop_mask = torch.zeros([num_images, image_height, image_width, 1], device=device)
+            crop_mask[:, image_height // 2 - dH: image_height // 2 + dH - 1, image_width // 2 - dW: image_width // 2 + dW - 1] = 1
+            if isinstance(mask, torch.Tensor):
+                mask = crop_mask * mask 
+            else:
+                mask = crop_mask
+        
         if isinstance(mask, torch.Tensor):
             nonzero_indices = torch.nonzero(mask[..., 0], as_tuple=False)
             chosen_indices = random.sample(range(len(nonzero_indices)), k=batch_size)
