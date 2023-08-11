@@ -118,18 +118,14 @@ in the Installation documentation for more.
 
 ### Installing nerfstudio
 
-Easy option:
 
 ```bash
-pip install nerfstudio
+pip install -e .
 ```
 
-**OR** if you want the latest and greatest:
-
+### Installing my project 
 ```bash
-git clone https://github.com/nerfstudio-project/nerfstudio.git
-cd nerfstudio
-pip install --upgrade pip setuptools
+cd myproject
 pip install -e .
 ```
 

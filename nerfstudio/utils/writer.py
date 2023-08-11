@@ -161,7 +161,7 @@ def put_config(name: str, config_dict: Dict[str, Any], step: int):
 
 
 @check_main_thread
-def put_time(name: str, duration: float, step: int, avg_over_steps: bool = True, update_eta: bool = False):
+def put_time(name: str, duration: float, step: int, avg_over_steps: bool = True, update_eta: bool = False, log: bool=True):
     """Setter function to place a time element into the queue to be written out.
     Processes the time info according to the options.
 
@@ -183,7 +183,8 @@ def put_time(name: str, duration: float, step: int, avg_over_steps: bool = True,
             curr_buffer.pop(0)
         curr_buffer.append(duration)
         curr_avg = sum(curr_buffer) / len(curr_buffer)
-        put_scalar(name, curr_avg, step)
+        if log:
+            put_scalar(name, curr_avg, step)
         GLOBAL_BUFFER["events"][name] = {"buffer": curr_buffer, "avg": curr_avg}
     else:
         put_scalar(name, duration, step)
@@ -192,7 +193,8 @@ def put_time(name: str, duration: float, step: int, avg_over_steps: bool = True,
         ## NOTE: eta should be called with avg train iteration time
         remain_iter = GLOBAL_BUFFER["max_iter"] - step
         remain_time = remain_iter * GLOBAL_BUFFER["events"][name]["avg"]
-        put_scalar(EventName.ETA, remain_time, step)
+        if log:
+            put_scalar(EventName.ETA, remain_time, step)
         GLOBAL_BUFFER["events"][EventName.ETA.value] = _format_time(remain_time)
 
 
@@ -365,6 +367,7 @@ class TimeWriter:
                 step=self.step if update_step else GLOBAL_BUFFER["max_iter"],
                 avg_over_steps=update_step,
                 update_eta=self.name == EventName.ITER_TRAIN_TIME,
+                log=False
             )
 
 
@@ -421,6 +424,17 @@ class TensorboardWriter(Writer):
     def write_image(self, name: str, image: Float[Tensor, "H W C"], step: int) -> None:
         image = to8b(image)
         self.tb_writer.add_image(name, image, step, dataformats="HWC")
+
+    def write_images(self, name: str, images: List[Float[Tensor, "H W C"]], step: int) -> None:
+        images = to8b(torch.stack(images, dim=0))
+        self.tb_writer.add_images(name, images, step, dataformats="NHWC")
+
+    def write_pcd(self, name: str, asset: Float[np.ndarray, "N 6"], step: int) -> None:
+        pass
+        
+    def write_pcds(self, name: str, asset: List[Float[Tensor, "N 6"]], step: int) -> None:
+        pass
+
 
     def write_scalar(self, name: str, scalar: Union[float, torch.Tensor], step: int) -> None:
         self.tb_writer.add_scalar(name, scalar, step)

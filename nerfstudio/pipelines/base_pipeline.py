@@ -465,7 +465,7 @@ class VanillaPipeline(Pipeline):
 
     @profiler.time_function
     @torch.no_grad()
-    def get_average_test_images_and_metrics(self, step: Optional[int] = None, output_path: Optional[Path] = None, get_std: bool = False) -> Tuple[Dict[str, Union[Tensor, float]], Dict[str, Tensor]]:
+    def get_average_test_images_and_metrics(self, step: Optional[int] = None, output_path: Optional[Path] = None, get_std: bool = False, return_img: bool = True) -> Tuple[Dict[str, Union[Tensor, float]], Dict[str, Tensor]]:
         """Iterate over all the images in the eval dataset and get the average.
 
         Returns:
@@ -492,10 +492,18 @@ class VanillaPipeline(Pipeline):
                     num_rays = height * width
                     outputs = self.model.get_outputs_for_camera_ray_bundle(camera_ray_bundle)
                     metrics_dict, images_dict = self.model.get_image_metrics_and_images(outputs, batch)
+                    if output_path is not None:
+                        camera_indices = camera_ray_bundle.camera_indices
+                        assert camera_indices is not None
+                        for key, val in images_dict.items():
+                            Image.fromarray((val * 255).byte().cpu().numpy()).save(
+                                output_path / "{0:06d}-{1}.jpg".format(int(camera_indices[0, 0, 0]), key)
+                            )
                     for k, v in images_dict.items():
                         if torch.is_tensor(v):
                             v = v.detach().cpu()
-                        total_image_dict[k].append(v)
+                        if return_img:
+                            total_image_dict[k].append(v)
                     assert "num_rays_per_sec" not in metrics_dict
                     metrics_dict["num_rays_per_sec"] = num_rays / (time() - inner_start)
                     fps_str = "fps"
@@ -509,8 +517,9 @@ class VanillaPipeline(Pipeline):
             metrics_dict[key] = float(
                 torch.mean(torch.tensor([metrics_dict[key] for metrics_dict in metrics_dict_list])).detach().cpu()
             )
-        self.train()
-        return metrics_dict, total_image_dict
+        if return_img:
+            return metrics_dict, total_image_dict
+        return metrics_dict
 
     def load_pipeline(self, loaded_state: Dict[str, Any], step: int) -> None:
         """Load the checkpoint from the given path

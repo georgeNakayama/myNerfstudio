@@ -1,8 +1,8 @@
 
 from nerfstudio.cameras.camera_optimizers import CameraOptimizerConfig
 from nerfstudio.configs.base_config import ViewerConfig
-from nerfstudio.data.dataparsers.blender_dataparser import BlenderDataParserConfig
 from nerfstudio.engine.optimizers import AdamOptimizerConfig, RAdamOptimizerConfig, ValidParamGroupsConfig, AdamaxOptimizerConfig
+from nerfstudio.model_components.losses import DepthLossType
 from nerfstudio.engine.schedulers import ExponentialDecaySchedulerConfig
 from myproject.engines.trainers.cimle_trainer import cIMLETrainerConfig
 from myproject.models.vanilla_cimle_nerf import cIMLEVanillaModelConfig
@@ -13,7 +13,6 @@ from nerfstudio.data.datamanagers.base_datamanager import VanillaDataManagerConf
 from nerfstudio.data.datasets.depth_dataset import DepthDataset
 from myproject.data.dataparsers.sparse_scannet_dataparser import SparseScannetDataParserConfig
 from nerfstudio.plugins.types import MethodSpecification
-from nerfstudio.plugins.registry_dataparser import DataParserSpecification
 from nerfstudio.engine.trainer import TrainerConfig
 from nerfstudio.pipelines.base_pipeline import VanillaPipelineConfig
 from nerfstudio.data.dataparsers.nerfstudio_dataparser import NerfstudioDataParserConfig
@@ -27,7 +26,7 @@ stochastic_nerfacto = MethodSpecification(
     steps_per_eval_batch=1000000,
     steps_per_eval_image=1000000,
     steps_per_train_image=5000,
-    steps_per_test_all_images=10000,
+    steps_per_test_all_images=5000,
     steps_per_save=5000,
     use_ema=True,
     save_only_latest_checkpoint=True,
@@ -49,20 +48,27 @@ stochastic_nerfacto = MethodSpecification(
             eval_num_rays_per_chunk=1 << 10,
             K_samples=32,
             eval_log_image_num=5,
-            num_nerf_samples_per_ray=256,
+            num_proposal_iterations=2,
+            interlevel_loss_mult=1,
+            distortion_loss_mult=0.,
+            num_nerf_samples_per_ray=48,
+            compute_kl=True,
+            depth_loss_type=DepthLossType.DS_NERF,
+            use_proposal_weight_anneal=True,
+            global_entropy=True,
             entropy_mult=0.01,
             disable_scene_contraction=True,
             use_aabb_collider=False,
             near_plane=0.10000000149011612,
             far_plane=4.03849983215332,
             add_end_bin=True,
-            is_euclidean_depth=True,
-            depth_loss_mult=1,
+            is_euclidean_depth=False,
+            depth_loss_mult=20,
         ),
     ),
     optimizers={
         "fields": {
-            "optimizer": AdamaxOptimizerConfig(lr=5e-4, eps=1e-15, max_norm=10),
+            "optimizer": AdamaxOptimizerConfig(lr=0.001, eps=1e-15, max_norm=10),
             "scheduler": ExponentialDecaySchedulerConfig(lr_final=0.0001, max_steps=60000),
         },
         "proposal_networks": {

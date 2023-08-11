@@ -60,6 +60,7 @@ from nerfstudio.models.neus import NeuSModelConfig
 from nerfstudio.models.neus_facto import NeuSFactoModelConfig
 from nerfstudio.models.semantic_nerfw import SemanticNerfWModelConfig
 from nerfstudio.models.tensorf import TensoRFModelConfig
+from nerfstudio.models.depth_vanilla_nerf import DepthNeRFModel, VanillaDepthModelConfig
 from nerfstudio.models.vanilla_nerf import NeRFModel, VanillaModelConfig
 from nerfstudio.pipelines.base_pipeline import VanillaPipelineConfig
 from nerfstudio.pipelines.dynamic_batch import DynamicBatchPipelineConfig
@@ -81,6 +82,7 @@ descriptions = {
     "generfacto": "Generative Text to NeRF model",
     "neus": "Implementation of NeuS. (slow)",
     "neus-facto": "Implementation of NeuS-Facto. (slow)",
+    "depth-vanilla-nerf": "Implementation of depth vanilla nerf (slow)"
 }
 
 method_configs["nerfacto"] = TrainerConfig(
@@ -222,18 +224,18 @@ method_configs["depth-nerfacto"] = TrainerConfig(
         model=DepthNerfactoModelConfig(
             eval_num_rays_per_chunk=1 << 15,
             is_euclidean_depth=True,
-            appearance_embed_dim=0,
+            appearance_embed_dim=32,
             disable_scene_contraction=True,
-            use_aabb_collider = True
+            use_aabb_collider = False
         ),
     ),
     optimizers={
         "proposal_networks": {
-            "optimizer": AdamOptimizerConfig(lr=5e-3, eps=1e-15),
+            "optimizer": AdamOptimizerConfig(lr=1e-2, eps=1e-15),
             "scheduler": ExponentialDecaySchedulerConfig(lr_final=0.0001, max_steps=200000),
         },
         "fields": {
-            "optimizer": AdamOptimizerConfig(lr=5e-3, eps=1e-15),
+            "optimizer": AdamOptimizerConfig(lr=1e-2, eps=1e-15),
             "scheduler": ExponentialDecaySchedulerConfig(lr_final=0.0001, max_steps=200000),
         },
     },
@@ -338,8 +340,6 @@ method_configs["instant-ngp-bounded"] = TrainerConfig(
 
 method_configs["mipnerf"] = TrainerConfig(
     method_name="mipnerf",
-    steps_per_train_image=5000,
-    steps_per_eval_image=5000,
     steps_per_test_all_images=100000000000000,
     max_num_iterations=200001,
     pipeline=VanillaPipelineConfig(
@@ -397,6 +397,27 @@ method_configs["vanilla-nerf"] = TrainerConfig(
             dataparser=BlenderDataParserConfig(),
         ),
         model=VanillaModelConfig(_target=NeRFModel),
+    ),
+    optimizers={
+        "fields": {
+            "optimizer": AdamOptimizerConfig(lr=5e-4),
+            "scheduler": VanillaNeRFDecaySchedulerConfig(),
+        },
+        "temporal_distortion": {
+            "optimizer": AdamOptimizerConfig(lr=5e-4, eps=1e-08),
+            "scheduler": None,
+        },
+    },
+)
+
+method_configs["depth-vanilla-nerf"] = TrainerConfig(
+    method_name="depth-vanilla-nerf",
+    pipeline=VanillaPipelineConfig(
+        datamanager=VanillaDataManagerConfig(
+            _target=VanillaDataManager[DepthDataset],
+            dataparser=BlenderDataParserConfig(),
+        ),
+        model=VanillaDepthModelConfig(is_euclidean_depth=False),
     ),
     optimizers={
         "fields": {

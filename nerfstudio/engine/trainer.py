@@ -295,15 +295,16 @@ class Trainer:
                         / max(0.001, train_t.duration),
                         step=step,
                         avg_over_steps=True,
+                        log=False
                     )
 
                 self._update_viewer_state(step)
-
                 # a batch of train rays
                 if step_check(step, self.config.logging.steps_per_log, run_at_zero=True):
                     writer.put_scalar(name="Train Loss", scalar=loss, step=step)
                     writer.put_dict(name="Train Loss Dict", scalar_dict=loss_dict, step=step)
                     writer.put_dict(name="Train Metrics Dict", scalar_dict=metrics_dict, step=step)
+                    
                     # The actual memory allocated by Pytorch. This is likely less than the amount
                     # shown in nvidia-smi since some unused memory can be held by the caching
                     # allocator and some context needs to be created on GPU. See Memory management
@@ -312,6 +313,7 @@ class Trainer:
                     writer.put_scalar(
                         name="GPU Memory (MB)", scalar=torch.cuda.max_memory_allocated() / (1024**2), step=step
                     )
+                    
 
                 if step_check(step, self.config.steps_per_train_image):
                     with TimeWriter(writer, EventName.TRAIN_RAYS_PER_SEC, write=False) as test_t:

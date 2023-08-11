@@ -174,7 +174,7 @@ class RaySamples(TensorDataclass):
 
         return weights, densities, transmittance
 
-    def get_weights(self, densities: Float[Tensor, "*batch num_samples 1"], return_all: bool=False) -> Float[Tensor, "*batch num_samples 1"]:
+    def get_weights(self, densities: Float[Tensor, "*batch num_samples 1"]) -> Float[Tensor, "*batch num_samples 1"]:
         """Return weights based on predicted densities
 
         Args:
@@ -195,8 +195,6 @@ class RaySamples(TensorDataclass):
 
         weights = alphas * transmittance  # [..., "num_samples"]
         weights = torch.nan_to_num(weights)
-        if return_all:
-            return weights, densities, transmittance
         return weights
 
     @overload

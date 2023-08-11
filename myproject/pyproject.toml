@@ -3,7 +3,9 @@ name = "cimle"
 version = "0.0.1"
 
 dependencies = [
-    "nerfstudio" # you may want to consider pinning the version, ie "nerfstudio==0.1.19"
+    "nerfstudio", # you may want to consider pinning the version, ie "nerfstudio==0.1.19"
+    "torch-ema",
+    "icecream"
 ]
 
 [tool.setuptools.packages.find]

@@ -95,6 +95,7 @@ class NerfactoField(Field):
         use_pred_normals: bool = False,
         use_average_appearance_embedding: bool = False,
         spatial_distortion: Optional[SpatialDistortion] = None,
+        use_directional_encoding: bool = True,
         implementation: Literal["tcnn", "torch"] = "tcnn",
     ) -> None:
         super().__init__()
@@ -116,7 +117,8 @@ class NerfactoField(Field):
         self.use_pred_normals = use_pred_normals
         self.pass_semantic_gradients = pass_semantic_gradients
         self.base_res = base_res
-
+        self.use_directional_encoding=use_directional_encoding
+        
         self.direction_encoding = SHEncoding(
             levels=4,
             implementation=implementation,
@@ -190,7 +192,7 @@ class NerfactoField(Field):
             self.field_head_pred_normals = PredNormalsFieldHead(in_dim=self.mlp_pred_normals.get_out_dim())
 
         self.mlp_head = MLP(
-            in_dim=self.direction_encoding.get_out_dim() + self.geo_feat_dim + self.appearance_embedding_dim,
+            in_dim=self.direction_encoding.get_out_dim() * int(self.use_directional_encoding) + self.geo_feat_dim + self.appearance_embedding_dim,
             num_layers=num_layers_color,
             layer_width=hidden_dim_color,
             out_dim=3,
@@ -235,10 +237,11 @@ class NerfactoField(Field):
         if ray_samples.camera_indices is None:
             raise AttributeError("Camera indices are not provided.")
         camera_indices = ray_samples.camera_indices.squeeze()[..., :1].repeat_interleave(density_embedding.shape[-2], dim=-1)
-        directions = ray_samples.frustums.directions[..., :1, :].repeat_interleave(density_embedding.shape[-2], dim=-2)
-        directions = get_normalized_directions(directions)
-        directions_flat = directions.view(-1, 3)
-        d = self.direction_encoding(directions_flat)
+        if self.use_directional_encoding:
+            directions = ray_samples.frustums.directions[..., :1, :].repeat_interleave(density_embedding.shape[-2], dim=-2)
+            directions = get_normalized_directions(directions)
+            directions_flat = directions.view(-1, 3)
+            d = self.direction_encoding(directions_flat)
         outputs_shape = density_embedding.shape[:-1]
 
         # appearance
@@ -248,11 +251,11 @@ class NerfactoField(Field):
             else:
                 if self.use_average_appearance_embedding:
                     embedded_appearance = torch.ones(
-                        (*directions.shape[:-1], self.appearance_embedding_dim), device=directions.device
+                        (*density_embedding.shape[:-1], self.appearance_embedding_dim), device=density_embedding.device
                     ) * self.embedding_appearance.mean(dim=0)
                 else:
                     embedded_appearance = torch.zeros(
-                        (*directions.shape[:-1], self.appearance_embedding_dim), device=directions.device
+                        (*density_embedding.shape[:-1], self.appearance_embedding_dim), device=density_embedding.device
                     )
         # transients
         if self.use_transient_embedding and self.training:
@@ -264,7 +267,7 @@ class NerfactoField(Field):
                 ],
                 dim=-1,
             )
-            x = self.mlp_transient(transient_input).view(*outputs_shape, -1).to(directions)
+            x = self.mlp_transient(transient_input).view(*outputs_shape, -1).to(density_embedding)
             outputs[FieldHeadNames.UNCERTAINTY] = self.field_head_transient_uncertainty(x)
             outputs[FieldHeadNames.TRANSIENT_RGB] = self.field_head_transient_rgb(x)
             outputs[FieldHeadNames.TRANSIENT_DENSITY] = self.field_head_transient_density(x)
@@ -275,7 +278,7 @@ class NerfactoField(Field):
             if not self.pass_semantic_gradients:
                 semantics_input = semantics_input.detach()
 
-            x = self.mlp_semantics(semantics_input).view(*outputs_shape, -1).to(directions)
+            x = self.mlp_semantics(semantics_input).view(*outputs_shape, -1).to(density_embedding)
             outputs[FieldHeadNames.SEMANTICS] = self.field_head_semantics(x)
 
         # predicted normals
@@ -285,25 +288,27 @@ class NerfactoField(Field):
             positions_flat = self.position_encoding(positions.view(-1, 3))
             pred_normals_inp = torch.cat([positions_flat, density_embedding.view(-1, self.geo_feat_dim)], dim=-1)
 
-            x = self.mlp_pred_normals(pred_normals_inp).view(*outputs_shape, -1).to(directions)
+            x = self.mlp_pred_normals(pred_normals_inp).view(*outputs_shape, -1).to(density_embedding)
             outputs[FieldHeadNames.PRED_NORMALS] = self.field_head_pred_normals(x)
 
+        h = density_embedding.view(-1, self.geo_feat_dim)
+        if self.use_directional_encoding:
+            h = torch.cat(
+                [d, h],
+                dim=-1,
+            )
+        
         
         if self.appearance_embedding_dim > 0:
             h = torch.cat(
                 [
-                    d,
-                    density_embedding.view(-1, self.geo_feat_dim),
+                    h,
                     embedded_appearance.view(-1, self.appearance_embedding_dim),
                 ],
                 dim=-1,
             )
-        else:
-            h = torch.cat(
-                [d, density_embedding.view(-1, self.geo_feat_dim)],
-                dim=-1,
-            )
-        rgb = self.mlp_head(h).view(*outputs_shape, -1).to(directions)
+            
+        rgb = self.mlp_head(h).view(*outputs_shape, -1).to(density_embedding)
         outputs.update({FieldHeadNames.RGB: rgb})
 
         return outputs
