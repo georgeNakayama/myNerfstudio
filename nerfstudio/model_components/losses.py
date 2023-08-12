@@ -43,6 +43,7 @@ class DepthLossType(Enum):
     DS_NERF = 1
     URF = 2
     SCADE = 3
+    L2 = 4
     
 
 
@@ -241,6 +242,26 @@ def ds_nerf_depth_loss(
     loss = loss.sum(-2) * depth_mask
     return torch.mean(loss)
 
+
+def l2_depth_loss(
+    termination_depth: Float[Tensor, "*batch 1"],
+    predicted_depth: Float[Tensor, "*batch 1"],
+) -> Float[Tensor, "*batch 1"]:
+    """Depth loss from Depth-supervised NeRF (Deng et al., 2022).
+
+    Args:
+        weights: Weights predicted for each sample.
+        termination_depth: Ground truth depth of rays.
+        steps: Sampling distances along rays.
+        lengths: Distances between steps.
+        sigma: Uncertainty around depth values.
+    Returns:
+        Depth loss scalar.
+    """
+    depth_mask = termination_depth > 0
+    loss = (termination_depth[depth_mask] - predicted_depth[depth_mask]) ** 2
+    return torch.mean(loss)
+
 def urban_radiance_field_depth_loss(
     weights: Float[Tensor, "*batch num_samples 1"],
     termination_depth: Float[Tensor, "*batch 1"],
@@ -329,6 +350,8 @@ def depth_loss(
         return urban_radiance_field_depth_loss(weights, termination_depth, predicted_depth, steps, sigma)
     if depth_loss_type == DepthLossType.SCADE:
         return scade_depth_loss(weights, termination_depth, ray_bundle)
+    if depth_loss_type == DepthLossType.L2:
+        return l2_depth_loss(termination_depth, predicted_depth)
     raise NotImplementedError("Provided depth loss type not implemented.")
 
 

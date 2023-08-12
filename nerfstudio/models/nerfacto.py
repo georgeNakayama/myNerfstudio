@@ -125,7 +125,7 @@ class NerfactoModelConfig(ModelConfig):
     """Use gradient scaler where the gradients are lower for points closer to the camera."""
     implementation: Literal["tcnn", "torch"] = "tcnn"
     """Which implementation to use for the model."""
-    depth_method: Literal["expected", "median"] = "median"
+    depth_method: Literal["expected", "median"] = "expected"
     """Which depth map rendering method to use."""
     appearance_embed_dim: int = 32
     """Dimension of the appearance embedding."""
