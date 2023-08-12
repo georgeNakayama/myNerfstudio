@@ -40,7 +40,7 @@ from nerfstudio.cameras.cameras import CameraType
 from nerfstudio.data.datamanagers.base_datamanager import VanillaDataManager, VanillaDataManagerConfig, TDataset
 from myproject.data.datasets.cimle_dataset import cIMLEDataset
 from myproject.data.cimle_pixel_samplers import cIMLEPixelSampler
-from nerfstudio.data.pixel_samplers import PixelSampler, PatchPixelSampler, EquirectangularPixelSampler
+from nerfstudio.data.pixel_samplers import PixelSampler, PatchPixelSampler
 from nerfstudio.utils.rich_utils import CONSOLE
 
 
@@ -101,8 +101,6 @@ class cIMLEDataManager(VanillaDataManager):
 
         # If all images are equirectangular, use equirectangular pixel sampler
         is_equirectangular = dataset.cameras.camera_type == CameraType.EQUIRECTANGULAR.value
-        if is_equirectangular.all():
-            return EquirectangularPixelSampler(*args, **kwargs)
         # Otherwise, use the default pixel sampler
         if is_equirectangular.any():
             CONSOLE.print("[bold yellow]Warning: Some cameras are equirectangular, but using default pixel sampler.")

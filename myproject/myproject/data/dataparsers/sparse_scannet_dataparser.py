@@ -17,26 +17,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-<<<<<<< HEAD
 from typing import Type, Dict, List, Tuple, Optional, Literal
 from nerfstudio.utils.rich_utils import CONSOLE
-=======
-from typing import Type, Dict, List, Tuple, Optional
-
-try:
-    from typing import Literal
-except ImportError:
-    from typing_extensions import Literal
-
->>>>>>> 916dead3447b30075b56e48a5f791df8e128635f
 import imageio
 import numpy as np
 import torch
 from collections import defaultdict
-<<<<<<< HEAD
-=======
-
->>>>>>> 916dead3447b30075b56e48a5f791df8e128635f
 from nerfstudio.cameras import camera_utils
 from nerfstudio.cameras.cameras import Cameras, CameraType
 from nerfstudio.data.dataparsers.base_dataparser import (
@@ -47,11 +33,6 @@ from nerfstudio.data.dataparsers.base_dataparser import (
 from nerfstudio.data.scene_box import SceneBox
 from nerfstudio.utils.colors import get_color
 from nerfstudio.utils.io import load_from_json
-<<<<<<< HEAD
-
-=======
-from nerfstudio.utils.rich_utils import CONSOLE
->>>>>>> 916dead3447b30075b56e48a5f791df8e128635f
 
 @dataclass
 class SparseScannetDataParserConfig(DataParserConfig):

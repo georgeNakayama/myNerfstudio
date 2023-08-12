@@ -111,7 +111,7 @@ class NerfactoModelConfig(ModelConfig):
     """Whether to use proposal weight annealing."""
     use_average_appearance_embedding: bool = True
     """Whether to use average appearance embedding or zeros for inference."""
-    appearance_embedding_dim: int = 32
+    appearance_embed_dim: int = 32
     """appearance embedding dimension. 0 to turn it off"""
     proposal_weights_anneal_slope: float = 10.0
     """Slope of the annealing function for the proposal weights. Negative to turn it off"""
@@ -168,7 +168,7 @@ class NerfactoModel(Model):
             spatial_distortion=scene_contraction,
             num_images=self.num_train_data,
             use_pred_normals=self.config.predict_normals,
-            appearance_embedding_dim=self.config.appearance_embedding_dim,
+            appearance_embed_dim=self.config.appearance_embed_dim,
             use_average_appearance_embedding=self.config.use_average_appearance_embedding,
             use_directional_encoding=self.config.use_directional_encoding,
             implementation=self.config.implementation,
@@ -233,7 +233,8 @@ class NerfactoModel(Model):
         # renderers
         self.renderer_rgb = RGBRenderer(background_color=self.config.background_color)
         self.renderer_accumulation = AccumulationRenderer()
-        self.renderer_depth = DepthRenderer(method=self.config.depth_method)
+        self.renderer_depth = DepthRenderer(method="median")
+        self.renderer_expected_depth = DepthRenderer(method="expected")
         self.renderer_normals = NormalsRenderer()
 
         # shaders
@@ -305,12 +306,14 @@ class NerfactoModel(Model):
         rgb = self.renderer_rgb(rgb=field_outputs[FieldHeadNames.RGB], weights=weights)
         with torch.no_grad():
             depth = self.renderer_depth(weights=weights, ray_samples=ray_samples)
+        expected_depth = self.renderer_expected_depth(weights=weights, ray_samples=ray_samples)
         accumulation = self.renderer_accumulation(weights=weights)
 
         outputs = {
             "rgb": rgb,
             "accumulation": accumulation,
             "depth": depth,
+            "expected_depth":expected_depth
         }
                     
         if self.config.predict_normals:

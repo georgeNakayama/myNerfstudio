@@ -126,19 +126,7 @@ class Pipeline(nn.Module):
 
         pipeline_state = {key: value for key, value in state_dict.items() if not key.startswith("_model.")}
         new_model_state = misc.filter_model_state_dict(self.model.state_dict(), model_state)
-<<<<<<< HEAD
         self.model.load_state_dict(new_model_state, strict=False)
-=======
-
-        try:
-            self.model.load_state_dict(new_model_state, strict=True)
-        except RuntimeError:
-            if not strict:
-                self.model.load_state_dict(new_model_state, strict=False)
-            else:
-                raise
-
->>>>>>> 916dead3447b30075b56e48a5f791df8e128635f
         super().load_state_dict(pipeline_state, strict=False)
 
     @profiler.time_function
@@ -388,74 +376,6 @@ class VanillaPipeline(Pipeline):
     def get_train_image_metrics_and_images(self, step: int):
         """This function gets your training loss dict. It needs to get the data
         from the DataManager and feed it to the model's forward function
-<<<<<<< HEAD
-
-        Args:
-            step: current iteration step
-        """
-        self.eval()
-        image_idx, camera_ray_bundle, batch = self.datamanager.next_train_image(step)
-        outputs = self.model.get_outputs_for_camera_ray_bundle(camera_ray_bundle)
-        metrics_dict, images_dict = self.model.get_image_metrics_and_images(outputs, batch)
-        assert "image_idx" not in metrics_dict
-        metrics_dict["image_idx"] = image_idx
-        assert "num_rays" not in metrics_dict
-        metrics_dict["num_rays"] = len(camera_ray_bundle)
-        self.train()
-        return metrics_dict, images_dict
-
-
-    @profiler.time_function
-    @torch.no_grad()
-    def get_average_test_images_and_metrics(self, step: Optional[int] = None) -> Tuple[Dict[str, Union[Tensor, float]], Dict[str, Tensor]]:
-        """Iterate over all the images in the eval dataset and get the average.
-
-        Returns:
-            metrics_dict: dictionary of metrics
-        """
-        self.eval()
-        metrics_dict_list = []
-        total_image_dict = defaultdict(list)
-        assert self.datamanager.fixed_indices_test_dataloader is not None
-        num_images = len(self.datamanager.fixed_indices_test_dataloader)
-        with Progress(
-            TextColumn("[progress.description]{task.description}"),
-            BarColumn(),
-            TimeElapsedColumn(),
-            MofNCompleteColumn(),
-            transient=True,
-        ) as progress:
-            task = progress.add_task("[green]Evaluating all test images...", total=num_images)
-            with model_context_manager.eval_context(self.model):
-                for i, (camera_ray_bundle, batch) in enumerate(self.datamanager.fixed_indices_test_dataloader):
-                    # time this the following line
-                    inner_start = time()
-                    height, width = camera_ray_bundle.shape
-                    num_rays = height * width
-                    outputs = self.model.get_outputs_for_camera_ray_bundle(camera_ray_bundle)
-                    metrics_dict, images_dict = self.model.get_image_metrics_and_images(outputs, batch)
-                    for k, v in images_dict.items():
-                        if torch.is_tensor(v):
-                            v = v.detach().cpu()
-                        total_image_dict[k].append(v)
-                    assert "num_rays_per_sec" not in metrics_dict
-                    metrics_dict["num_rays_per_sec"] = num_rays / (time() - inner_start)
-                    fps_str = "fps"
-                    assert fps_str not in metrics_dict
-                    metrics_dict[fps_str] = metrics_dict["num_rays_per_sec"] / (height * width)
-                    metrics_dict_list.append(metrics_dict)
-                    progress.advance(task)
-        # average the metrics list
-        metrics_dict = {}
-        for key in metrics_dict_list[0].keys():
-            metrics_dict[key] = float(
-                torch.mean(torch.tensor([metrics_dict[key] for metrics_dict in metrics_dict_list])).detach().cpu()
-            )
-        total_image_dict = {k: torch.stack(v, dim=0) for k, v in total_image_dict.items()}
-        self.train()
-        return metrics_dict, total_image_dict
-=======
->>>>>>> 916dead3447b30075b56e48a5f791df8e128635f
 
         Args:
             step: current iteration step
@@ -631,11 +551,7 @@ class VanillaPipeline(Pipeline):
             writer.put_image(name="all_val_views", image=all_val_views, step=step)
             writer.put_image(name="all_test_views", image=all_test_views, step=step)
         
-<<<<<<< HEAD
-        save_cb = TrainingCallback([TrainingCallbackLocation.BEFORE_TRAIN], save_all_images)
-=======
         save_cb = TrainingCallback([TrainingCallbackLocation.BEFORE_TRAIN_ITERATION],iters=[0], func=save_all_images)
->>>>>>> 916dead3447b30075b56e48a5f791df8e128635f
         callbacks += [save_cb]
         return callbacks
 

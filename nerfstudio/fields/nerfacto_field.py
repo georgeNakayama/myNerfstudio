@@ -58,7 +58,7 @@ class NerfactoField(Field):
         features_per_level: number of features per level for the hashgrid
         hidden_dim_color: dimension of hidden layers for color network
         hidden_dim_transient: dimension of hidden layers for transient network
-        appearance_embedding_dim: dimension of appearance embedding
+        appearance_embed_dim: dimension of appearance embedding
         transient_embedding_dim: dimension of transient embedding
         use_transient_embedding: whether to use transient embedding
         use_semantics: whether to use semantic segmentation
@@ -86,7 +86,7 @@ class NerfactoField(Field):
         features_per_level: int = 2,
         hidden_dim_color: int = 64,
         hidden_dim_transient: int = 64,
-        appearance_embedding_dim: int = 32,
+        appearance_embed_dim: int = 32,
         transient_embedding_dim: int = 16,
         use_transient_embedding: bool = False,
         use_semantics: bool = False,
@@ -109,8 +109,8 @@ class NerfactoField(Field):
 
         self.spatial_distortion = spatial_distortion
         self.num_images = num_images
-        self.appearance_embedding_dim = appearance_embedding_dim
-        self.embedding_appearance = Embedding(self.num_images, self.appearance_embedding_dim)
+        self.appearance_embed_dim = appearance_embed_dim
+        self.embedding_appearance = Embedding(self.num_images, self.appearance_embed_dim)
         self.use_average_appearance_embedding = use_average_appearance_embedding
         self.use_transient_embedding = use_transient_embedding
         self.use_semantics = use_semantics
@@ -192,7 +192,7 @@ class NerfactoField(Field):
             self.field_head_pred_normals = PredNormalsFieldHead(in_dim=self.mlp_pred_normals.get_out_dim())
 
         self.mlp_head = MLP(
-            in_dim=self.direction_encoding.get_out_dim() * int(self.use_directional_encoding) + self.geo_feat_dim + self.appearance_embedding_dim,
+            in_dim=self.direction_encoding.get_out_dim() * int(self.use_directional_encoding) + self.geo_feat_dim + self.appearance_embed_dim,
             num_layers=num_layers_color,
             layer_width=hidden_dim_color,
             out_dim=3,
@@ -245,17 +245,17 @@ class NerfactoField(Field):
         outputs_shape = density_embedding.shape[:-1]
 
         # appearance
-        if self.appearance_embedding_dim > 0:
+        if self.appearance_embed_dim > 0:
             if self.training:
                 embedded_appearance = self.embedding_appearance(camera_indices)
             else:
                 if self.use_average_appearance_embedding:
                     embedded_appearance = torch.ones(
-                        (*density_embedding.shape[:-1], self.appearance_embedding_dim), device=density_embedding.device
+                        (*density_embedding.shape[:-1], self.appearance_embed_dim), device=density_embedding.device
                     ) * self.embedding_appearance.mean(dim=0)
                 else:
                     embedded_appearance = torch.zeros(
-                        (*density_embedding.shape[:-1], self.appearance_embedding_dim), device=density_embedding.device
+                        (*density_embedding.shape[:-1], self.appearance_embed_dim), device=density_embedding.device
                     )
         # transients
         if self.use_transient_embedding and self.training:
@@ -299,11 +299,11 @@ class NerfactoField(Field):
             )
         
         
-        if self.appearance_embedding_dim > 0:
+        if self.appearance_embed_dim > 0:
             h = torch.cat(
                 [
                     h,
-                    embedded_appearance.view(-1, self.appearance_embedding_dim),
+                    embedded_appearance.view(-1, self.appearance_embed_dim),
                 ],
                 dim=-1,
             )

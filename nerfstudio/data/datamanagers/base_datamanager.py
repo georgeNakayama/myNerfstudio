@@ -525,7 +525,7 @@ class VanillaDataManager(DataManager, Generic[TDataset]):
     ) -> List[TrainingCallback]:
         """Returns a list of callbacks to be used during training."""
         cbs = []
-        if self.config.center_crop:
+        if self.config.pixel_sampler.center_crop:
             cb = TrainingCallback([TrainingCallbackLocation.BEFORE_TRAIN_ITERATION], self.train_pixel_sampler.set_center_crop, update_every_num_iters=1)
             cbs.append(cb)
         if self.config.use_mask_iter > 0:
