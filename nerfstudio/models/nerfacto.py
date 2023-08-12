@@ -127,7 +127,7 @@ class NerfactoModelConfig(ModelConfig):
     """Use gradient scaler where the gradients are lower for points closer to the camera."""
     implementation: Literal["tcnn", "torch"] = "tcnn"
     """Which implementation to use for the model."""
-    depth_method: Literal["expected", "median"] = "median"
+    depth_method: Literal["expected", "median"] = "expected"
     """Which depth map rendering method to use."""
     add_end_bin: bool = False 
     """Specifies whether to add an ending bin to each ray's samples."""
