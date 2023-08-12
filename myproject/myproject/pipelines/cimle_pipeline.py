@@ -39,6 +39,56 @@ from nerfstudio.engine.callbacks import TrainingCallback, TrainingCallbackAttrib
 from nerfstudio.utils import profiler
 from nerfstudio.pipelines.base_pipeline import VanillaPipeline, VanillaPipelineConfig
 
+<<<<<<< HEAD
+=======
+
+def cache_latents(pipeline, step):
+    assert hasattr(pipeline.datamanager, "fixed_indices_train_dataloader"), "must set up dataloader that loads training full images!"
+    pipeline.eval()
+    num_images = len(pipeline.datamanager.fixed_indices_train_dataloader)
+    all_z = torch.normal(0.0, 1.0, size=(pipeline.cimle_sample_num, num_images, pipeline.cimle_ch), device=pipeline.device)
+    all_losses = torch.zeros((pipeline.cimle_sample_num, num_images), device=pipeline.device)
+    with Progress(
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TimeElapsedColumn(),
+        MofNCompleteColumn(),
+        transient=True,
+    ) as progress:
+        first_bundle, _ = next(t for t in pipeline.datamanager.fixed_indices_train_dataloader)
+        num_rays = min(pipeline.config.cimle_num_rays_to_test, len(first_bundle)) if pipeline.config.cimle_num_rays_to_test > 0 else len(first_bundle)
+        task_outer = progress.add_task("[green]Caching cIMLE latent for all train images...", total=pipeline.cimle_sample_num)
+        task_inner = progress.add_task(f"[green] [0/{pipeline.cimle_sample_num}] image loop, {num_rays} rays per image uses ...", total=num_images)
+        for n in range(pipeline.cimle_sample_num):
+            for i, (camera_ray_bundle, batch) in enumerate(pipeline.datamanager.fixed_indices_train_dataloader):
+                # one latent per image for now. 
+                img_idx = batch['image_idx']
+                z = all_z[n, img_idx]
+                height, width = camera_ray_bundle.shape
+                perm = torch.randperm(height*width)[:num_rays]
+                # print(indices)
+                ray_bundle = camera_ray_bundle.flatten()[perm]
+                _ = batch.pop("cimle_latent", None)
+                batch = {k: v.flatten(end_dim=1)[perm] if isinstance(v, Tensor) else v for k, v in batch.items()}
+                ray_bundle.metadata["cimle_latent"] = z.reshape(1, -1).expand(num_rays, -1)
+                model_outputs = pipeline.model.get_outputs_for_ray_bundle_chunked(ray_bundle)
+                metrics_dict = pipeline.model.get_metrics_dict(model_outputs, batch)
+                loss_dict = pipeline.model.get_loss_dict(model_outputs, batch, metrics_dict)
+                all_losses[n, img_idx] = loss_dict['rgb_loss']
+                progress.update(task_id=task_inner, completed=i + 1)
+            progress.reset(task_inner, description=f"[green][{n + 1}/{pipeline.cimle_sample_num}] image loop, {num_rays} rays per image...")
+
+            progress.update(task_id=task_outer, completed=n + 1)
+        # get the min latent
+    metrics_dict = {}
+    ### Get the best loss and select and z code
+    idx_to_take = torch.argmin(all_losses, axis=0).reshape(1, -1, 1).expand(1, -1, pipeline.cimle_ch) # [num_images]
+    selected_z = torch.gather(all_z, 0, idx_to_take)[0] # [num_images, cimle_ch]
+    pipeline.datamanager.train_dataset.set_cimle_latent(selected_z)
+    pipeline.datamanager.train_image_dataloader.recache()
+    pipeline.train()
+
+>>>>>>> 916dead3447b30075b56e48a5f791df8e128635f
 @dataclass
 class cIMLEPipelineConfig(VanillaPipelineConfig):
     """Configuration for pipeline instantiation"""
@@ -239,6 +289,7 @@ class cIMLEPipeline(VanillaPipeline):
         """Returns the training callbacks from both the Dataloader and the Model."""
         callbacks = super().get_training_callbacks(training_callback_attributes)
         
+<<<<<<< HEAD
         def cache_latents(step):
             assert hasattr(self.datamanager, "fixed_indices_train_dataloader"), "must set up dataloader that loads training full images!"
             self.eval()
@@ -287,6 +338,13 @@ class cIMLEPipeline(VanillaPipeline):
         # get cimle callback 
         cimle_caching_callback = TrainingCallback([TrainingCallbackLocation.BEFORE_TRAIN_ITERATION], cache_latents, 
                                           update_every_num_iters=self.cimle_cache_interval)
+=======
+        
+            
+        # get cimle callback 
+        cimle_caching_callback = TrainingCallback([TrainingCallbackLocation.BEFORE_TRAIN_ITERATION], cache_latents, 
+                                          update_every_num_iters=self.cimle_cache_interval, args=[self])
+>>>>>>> 916dead3447b30075b56e48a5f791df8e128635f
         
         callbacks = callbacks + [cimle_caching_callback]
         return callbacks

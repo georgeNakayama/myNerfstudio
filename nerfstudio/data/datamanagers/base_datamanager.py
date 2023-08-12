@@ -417,12 +417,6 @@ class VanillaDataManagerConfig(DataManagerConfig):
     """Size of patch to sample from. If >1, patch-based sampling will be used."""
     pixel_sampler: PixelSamplerConfig = PixelSamplerConfig()
     """Specifies the pixel sampler used to sample pixels from images."""
-    center_crop: bool = False 
-    """Whether to use center crop at the beginning of training"""
-    center_crop_iter: int = 500 
-    """center crop iteration"""
-    crops_frac: float = 0.5 
-    """center crop fraction"""
     use_mask_iter: int = -1
     """iterations to use mask"""
 
@@ -588,7 +582,7 @@ class VanillaDataManager(DataManager, Generic[TDataset]):
             exclude_batch_keys_from_device=self.exclude_batch_keys_from_device,
         )
         self.iter_train_image_dataloader = iter(self.train_image_dataloader)
-        self.train_pixel_sampler = self._get_pixel_sampler(self.train_dataset, self.config.train_num_rays_per_batch, center_crop=self.config.center_crop, center_crop_iter=self.config.center_crop_iter, crops_frac=self.config.crops_frac)
+        self.train_pixel_sampler = self._get_pixel_sampler(self.train_dataset, self.config.train_num_rays_per_batch)
         self.train_camera_optimizer = self.config.camera_optimizer.setup(
             num_cameras=self.train_dataset.cameras.size, device=self.device
         )

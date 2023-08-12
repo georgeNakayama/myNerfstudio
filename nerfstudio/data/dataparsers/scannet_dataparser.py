@@ -16,8 +16,13 @@
 import math
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal, Type
+from typing import Type
 
+try:
+    from typing import Literal
+except ImportError:
+    from typing_extensions import Literal
+    
 import cv2
 import numpy as np
 import torch

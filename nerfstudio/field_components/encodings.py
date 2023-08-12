@@ -281,7 +281,6 @@ class HashEncoding(Encoding):
         levels = torch.arange(num_levels)
         growth_factor = np.exp((np.log(max_res) - np.log(min_res)) / (num_levels - 1)) if num_levels > 1 else 1
         self.scalings = torch.floor(min_res * growth_factor**levels)
-
         self.hash_offset = levels * self.hash_table_size
 
         self.tcnn_encoding = None
